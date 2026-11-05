@@ -14,7 +14,14 @@ from tradingagents.dataflows.config import run_config, run_config_context, set_c
 from tradingagents.dataflows.date_window import get_current_date, is_historical
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.llm_clients import create_tier_client, tier_provider
+from tradingagents.llm_clients import (
+    AGENT_ROLE_SPECS,
+    configured_agent_models,
+    create_agent_client,
+    create_tier_client,
+    resolve_agent_spec,
+    tier_provider,
+)
 from tradingagents.memory import TradingMemoryLog, settlement
 from tradingagents.memory.reflection import Reflector
 from tradingagents.reporting import write_report_tree
@@ -79,6 +86,18 @@ class TradingAgentsGraph:
         self.deep_thinking_llm = create_tier_client(self.config, "deep", **extra).get_llm()
         self.quick_thinking_llm = create_tier_client(self.config, "quick", **extra).get_llm()
 
+        self.agent_llms: dict[str, Any] = {}
+        _cached_role_llms: dict[tuple[str | None, str | None, str | None], Any] = {}
+        for spec in AGENT_ROLE_SPECS:
+            role_key = spec["key"]
+            resolved = resolve_agent_spec(self.config, role_key)
+            if not resolved["overridden"]:
+                continue
+            cache_key = (resolved["provider"], resolved["model"], resolved["base_url"])
+            if cache_key not in _cached_role_llms:
+                _cached_role_llms[cache_key] = create_agent_client(self.config, role_key, **extra).get_llm()
+            self.agent_llms[role_key] = _cached_role_llms[cache_key]
+
         self.memory_log = TradingMemoryLog(self.config)
 
         self.conditional_logic = ConditionalLogic(
@@ -98,6 +117,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.conditional_logic,
             max_tool_rounds,
+            agent_llms=self.agent_llms,
         )
 
         self.propagator = Propagator(
@@ -261,7 +281,7 @@ class TradingAgentsGraph:
         local paths are never recorded.
         """
         cfg = self.config
-        return {
+        out = {
             "version": tradingagents.__version__,
             "llm_provider": cfg.get("llm_provider"),
             "deep_think_provider": tier_provider(cfg, "deep") if cfg.get("llm_provider") else None,
@@ -279,6 +299,10 @@ class TradingAgentsGraph:
             "futu_community_enabled": cfg.get("futu_community_enabled", True),
             "futu_announcements_enabled": cfg.get("futu_announcements_enabled", True),
         }
+        agent_models = configured_agent_models(cfg) if cfg.get("llm_provider") else {}
+        if agent_models:
+            out["agent_models"] = agent_models
+        return out
 
     def save_reports(self, final_state, ticker, save_path=None, html=True) -> Path:
         """Write the report tree for a completed run, like the CLI does.
@@ -324,15 +348,25 @@ class TradingAgentsGraph:
         the log are used, and the report says what could not be settled.
         """
         note = ""
+        settlement_info: dict[str, Any] = {"settled": [], "failed": []}
         try:
             # Another run settling the same log does the work; this one goes on.
             done = self.settle_all_pending(wait=False)
+            settlement_info = {
+                "settled": list(getattr(done, "outcomes", None) or [
+                    {"ticker": t, "date": d} for t, d in (done.settled or [])
+                ]),
+                "failed": [
+                    {"ticker": t, "date": d, "reason": r} for t, d, r in (done.failed or [])
+                ],
+            }
             if done.failed:
                 note = (f"{len(done.failed)} past decision(s) could not be settled this run "
                         "and stay pending.")
         except Exception as exc:
             logger.warning("Settling past decisions failed: %s", exc)
             note = f"Past decisions could not be settled this run ({type(exc).__name__}); they stay pending."
+            settlement_info = {"settled": [], "failed": [], "error": f"{type(exc).__name__}: {exc}"}
         try:
             past_context = self.memory_log.get_past_context(
                 state["company_of_interest"], as_of=self._memory_as_of(state["trade_date"]))
@@ -340,7 +374,7 @@ class TradingAgentsGraph:
             logger.warning("Reading the memory log failed: %s", exc)
             past_context = ""
             note = note or f"The memory log could not be read this run ({type(exc).__name__})."
-        return {"past_context": past_context, "memory_note": note}
+        return {"past_context": past_context, "memory_note": note, "memory_settlement": settlement_info}
 
     def settle_pending(self, company_name) -> settlement.Settlement:
         """Settle this ticker's decisions whose holding window has now traded.

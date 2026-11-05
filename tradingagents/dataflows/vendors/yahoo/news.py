@@ -1,6 +1,7 @@
 """yfinance-based news data fetching functions."""
 
 import contextlib
+import logging
 from datetime import UTC, datetime
 
 import yfinance as yf
@@ -11,6 +12,8 @@ from tradingagents.dataflows.date_window import coverage_gap, in_window
 from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import yf_retry
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_article_data(article: dict) -> dict:
@@ -61,21 +64,28 @@ def _search_news(canonical: str, limit: int) -> tuple[list, bool]:
     relevance-picked sample, and some are tagged loosely; only those tagged with
     the symbol are about it.
     """
-    search = yf_retry(lambda: yf.Search(canonical, news_count=limit))
-    if search is None:  # Yahoo answered "not found": its search is down
-        return [], False
-    tagged = [
-        a for a in (search.news or [])
-        if canonical in (t.upper() for t in a.get("relatedTickers") or [])
-    ]
-    knows = any((q.get("symbol") or "").upper() == canonical for q in search.quotes or [])
-    return tagged, knows or bool(search.news)
+    def fetch():
+        search = yf.Search(canonical, news_count=limit)
+        if search is None:
+            return [], False
+        news = search.news or []
+        tagged = [
+            a for a in news
+            if canonical in (t.upper() for t in a.get("relatedTickers") or [])
+        ]
+        knows = any((q.get("symbol") or "").upper() == canonical for q in search.quotes or [])
+        return tagged, knows or bool(news)
+
+    # Include reading the results in the retry boundary: lazy responses can fail too.
+    return yf_retry(fetch) or ([], False)
 
 
 def _format_articles(articles: list[dict]) -> str:
     out = ""
     for data in articles:
         out += f"### {data['title']} (source: {data['publisher']})\n"
+        if data["pub_date"] is not None:
+            out += f"Published: {data['pub_date'].isoformat()}\n"
         if data["summary"]:
             out += f"{data['summary']}\n"
         if data["link"]:
@@ -91,7 +101,7 @@ def get_news_yfinance(
 ) -> str:
     """News about ``ticker`` published in the window, from Yahoo Finance.
 
-    The symbol's quote feed comes first. When it is empty, Yahoo search serves
+    The symbol's quote feed comes first. When it fails or is empty, Yahoo search serves
     the articles tagged with the symbol; when it has none, or neither answers,
     Yahoo news is unavailable, which is not an absence of news, and a configured
     next vendor is tried. Search results are a sample, so finding none in the
@@ -104,10 +114,24 @@ def get_news_yfinance(
     canonical = normalize_symbol(ticker)
     resolved = "" if canonical == ticker else f" (resolved to {canonical})"
     subject = f"news for {ticker}{resolved}"
-    feed = yf_retry(lambda: yf.Ticker(canonical).get_news(count=article_limit)) or []
+    feed_error = None
+    try:
+        feed = yf_retry(lambda: yf.Ticker(canonical).get_news(count=article_limit)) or []
+    except VendorUnavailableError as exc:
+        feed_error = exc
+        feed = []
+        logger.warning("Yahoo quote news unavailable for %s: %s; trying Yahoo search.", canonical, exc)
     articles = [_extract_article_data(a) for a in feed]
     if not feed:
-        found, answered = _search_news(canonical, article_limit)
+        try:
+            found, answered = _search_news(canonical, article_limit)
+        except VendorUnavailableError as exc:
+            if feed_error is not None:
+                raise VendorUnavailableError(
+                    f"Yahoo Finance news unavailable for {canonical}: "
+                    f"quote feed failed ({feed_error}); search failed ({exc})"
+                ) from exc
+            raise
         if not answered:
             raise VendorUnavailableError(f"Yahoo Finance returned no news response for {canonical}")
         if not found:
@@ -121,7 +145,8 @@ def get_news_yfinance(
     # Keep only articles within the requested window (look-ahead safe).
     in_range = [a for a in articles if in_window(a["pub_date"], start_dt, end_dt)]
     if in_range:
-        return f"## {ticker}{resolved} News, from {start_date} to {end_date}:\n\n{_format_articles(in_range)}"
+        source = "Source: Yahoo search (sample; not complete news coverage).\n\n" if not feed else ""
+        return f"## {ticker}{resolved} News, from {start_date} to {end_date}:\n\n{source}{_format_articles(in_range)}"
 
     if not feed:
         return (f"<Yahoo Finance news unavailable for {start_date}..{end_date}: Yahoo search "

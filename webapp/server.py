@@ -29,7 +29,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -42,9 +44,20 @@ import tradingagents
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import ANALYST_NODE_SPECS
-from tradingagents.llm_clients.model_catalog import get_model_options
+from tradingagents.llm_clients import chatgpt_auth
+from tradingagents.llm_clients.antigravity_client import find_agy_binary
+from tradingagents.llm_clients.api_key_env import get_api_key_env
+from tradingagents.llm_clients.claude_cli_client import find_claude_binary
+from tradingagents.llm_clients.codex_cli_client import find_codex_binary
+from tradingagents.llm_clients.factory import (
+    AGENT_ROLE_SPECS,
+    configured_agent_models,
+    tier_provider,
+)
+from tradingagents.llm_clients.model_catalog import PROVIDER_CATALOG, get_model_options
 
 from . import LOOPBACK_HOSTS
+from .auth import PROVIDERS as AUTH_PROVIDERS, AuthError, AuthManager
 from .history import (
     RunHistory,
     RunSummary,
@@ -54,11 +67,66 @@ from .history import (
     summarize,
     valid_run_id,
 )
-from .runs import ANALYSTS, LiveRun, RunBusy, RunManager, RunRequest
+from .runs import ANALYSTS, LiveRun, RunBusy, RunManager, RunRequest, WebSettingsRequest
 
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
+DEFAULT_WEB_SETTINGS_PATH = Path.home() / ".tradingagents" / "web_settings.json"
 _KEEPALIVE_S = 10.0
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _provider_status(provider_key: str) -> tuple[bool, str]:
+    """Return ``(available, status_label)`` for the Web UI provider dropdown."""
+    key = provider_key.strip().lower()
+    if key == "chatgpt":
+        try:
+            who = chatgpt_auth.signed_in_as()
+            if who:
+                return True, f"本地订阅已登录 ({who})"
+        except Exception:
+            pass
+        return False, "未登录 (可运行 tradingagents login)"
+    if key == "antigravity":
+        try:
+            find_agy_binary()
+            return True, "本地 CLI 已就绪 (agy)"
+        except Exception:
+            return False, "未检测到 agy CLI"
+    if key == "claude-cli":
+        try:
+            find_claude_binary()
+            return True, "本地 CLI 已就绪 (claude)"
+        except Exception:
+            return False, "未检测到 claude CLI"
+    if key == "codex":
+        try:
+            find_codex_binary()
+            return True, "CLI 已安装（账号见订阅账号区域）"
+        except Exception:
+            return False, "未检测到 codex CLI"
+    if key == "ollama":
+        return True, "本地 Ollama 服务"
+    env_var = get_api_key_env(key)
+    if env_var:
+        if (os.environ.get(env_var) or "").strip():
+            return True, f"API Key 已就绪 ({env_var})"
+        return False, f"需配置 {env_var}"
+    return True, "可用"
+
+
+def _load_persisted_settings(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_persisted_settings(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _same_machine(origin: str) -> bool:
@@ -74,20 +142,38 @@ def _frame(event: dict) -> str:
 
 
 def create_app(config: dict | None = None, *, graph_factory=None,
-               allowed_hosts: tuple[str, ...] = LOOPBACK_HOSTS) -> FastAPI:
+               allowed_hosts: tuple[str, ...] = LOOPBACK_HOSTS,
+               settings_path: Path | None = None) -> FastAPI:
     """The app over ``config`` (the defaults and ``.env`` when None).
 
     ``graph_factory(analysts, config)`` builds each run's graph; tests pass one
     with scripted models.
     """
+    use_default_persistence = config is None and settings_path is None
+    effective_settings_path = DEFAULT_WEB_SETTINGS_PATH if use_default_persistence else settings_path
     config = copy.deepcopy(config or DEFAULT_CONFIG)
+    if effective_settings_path is not None:
+        saved = _load_persisted_settings(effective_settings_path)
+        for k, v in saved.items():
+            if v is not None:
+                config[k] = v
     manager = RunManager(config, graph_factory)
     history = RunHistory(config["results_dir"])
+    auth = AuthManager()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(auth.close)
 
     app = FastAPI(title="TradingAgents", version=tradingagents.__version__,
-                  docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
+                  docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None,
+                  lifespan=lifespan)
     app.state.manager = manager
     app.state.history = history
+    app.state.auth = auth
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
 
     @app.middleware("http")
@@ -123,36 +209,162 @@ def create_app(config: dict | None = None, *, graph_factory=None,
         return {"ok": True, "version": tradingagents.__version__,
                 "active_run": active.run_id if active else None}
 
+    @app.get("/api/auth")
+    def accounts(refresh: bool = False):
+        active = manager.active
+        login = auth.login_status()
+        return JSONResponse({"accounts": auth.accounts(refresh=refresh),
+                             "login": login,
+                             "active_run": active.run_id if active else None},
+                            headers={"Cache-Control": "no-store"})
+
+    def require_auth_action(provider: str, header: str | None) -> None:
+        if header != "1":
+            raise HTTPException(403, "账号操作需要从本机 TradingAgents 网页发起。")
+        if provider not in AUTH_PROVIDERS:
+            raise HTTPException(404, "不支持此账号类型。")
+        active = manager.active
+        if active:
+            raise HTTPException(409, {"message": "分析运行期间不能切换账号，请等待结束或取消分析。",
+                                      "active_run": active.run_id})
+
+    @app.post("/api/auth/{provider}/login", status_code=202)
+    def login(provider: str, x_tradingagents_auth: str | None = Header(default=None)):
+        with auth.lock:
+            require_auth_action(provider, x_tradingagents_auth)
+            try:
+                attempt = auth.start_login(provider)
+            except AuthError as exc:
+                raise HTTPException(409, str(exc)) from None
+        return JSONResponse({"login": attempt}, status_code=202,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/auth/{provider}/logout")
+    def logout(provider: str, x_tradingagents_auth: str | None = Header(default=None)):
+        with auth.lock:
+            require_auth_action(provider, x_tradingagents_auth)
+            try:
+                message = auth.logout(provider)
+            except AuthError as exc:
+                raise HTTPException(409, str(exc)) from None
+            except Exception:
+                raise HTTPException(503, "退出登录失败，请检查本机授权文件权限后重试。") from None
+        return JSONResponse({"message": message}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/auth/logins/{login_id}/cancel")
+    def cancel_login(login_id: str, x_tradingagents_auth: str | None = Header(default=None)):
+        with auth.lock:
+            require_auth_action("chatgpt", x_tradingagents_auth)
+            try:
+                auth.cancel(login_id)
+            except AuthError as exc:
+                raise HTTPException(404, str(exc)) from None
+        return JSONResponse({"login": auth.login_status()}, headers={"Cache-Control": "no-store"})
+
     @app.get("/api/options")
     def options():
-        provider = config.get("llm_provider") or ""
+        provider = (config.get("llm_provider") or "").lower()
 
-        def models(mode: str) -> list[dict]:
+        def models_for(prov: str, mode: str) -> list[dict]:
             try:
-                return [{"label": label, "value": value} for label, value in get_model_options(provider, mode)]
+                return [
+                    {"label": label, "value": value}
+                    for label, value in get_model_options(prov, mode)
+                    if value != "custom"
+                ]
             except (KeyError, AttributeError):
                 return []
+
+        providers_list = []
+        for pkey, plabel in PROVIDER_CATALOG:
+            avail, detail = _provider_status(pkey)
+            providers_list.append(
+                {
+                    "key": pkey,
+                    "label": plabel,
+                    "available": avail,
+                    "detail": detail,
+                    "models": {
+                        "quick": models_for(pkey, "quick"),
+                        "deep": models_for(pkey, "deep"),
+                    },
+                }
+            )
 
         return {
             "analysts": [{"key": key, "name": ANALYST_NODE_SPECS[key].agent_node} for key in ANALYSTS],
             "provider": provider,
-            "models": {"quick": models("quick"), "deep": models("deep")},
+            "providers": providers_list,
+            "roles": [dict(spec) for spec in AGENT_ROLE_SPECS],
+            "models": {"quick": models_for(provider, "quick"), "deep": models_for(provider, "deep")},
             "defaults": {
                 "analysts": list(ANALYSTS),
                 "trade_date": get_current_date(),
+                "quick_think_provider": tier_provider(config, "quick") if provider else "",
+                "deep_think_provider": tier_provider(config, "deep") if provider else "",
                 "quick_think_llm": config.get("quick_think_llm"),
                 "deep_think_llm": config.get("deep_think_llm"),
+                "agent_models": configured_agent_models(config) if provider else {},
                 "output_language": config.get("output_language"),
                 "max_debate_rounds": config.get("max_debate_rounds"),
                 "max_risk_discuss_rounds": config.get("max_risk_discuss_rounds"),
+                "openai_reasoning_effort": config.get("openai_reasoning_effort"),
+                "google_thinking_level": config.get("google_thinking_level"),
+                "anthropic_effort": config.get("anthropic_effort"),
             },
             "limits": {"rounds": {"min": 1, "max": 5}},
         }
 
+    @app.put("/api/settings")
+    def update_settings(body: WebSettingsRequest):
+        updates = body.model_dump(exclude_unset=True)
+        for key in (
+            "llm_provider",
+            "quick_think_provider",
+            "deep_think_provider",
+            "quick_think_llm",
+            "deep_think_llm",
+            "max_debate_rounds",
+            "max_risk_discuss_rounds",
+            "output_language",
+            "openai_reasoning_effort",
+            "google_thinking_level",
+            "anthropic_effort",
+        ):
+            if key in updates and updates[key] is not None:
+                config[key] = updates[key]
+        if "agent_models" in updates:
+            config["agent_models"] = updates["agent_models"] or {}
+        if not config.get("llm_provider") and config.get("quick_think_provider"):
+            config["llm_provider"] = config["quick_think_provider"]
+        if effective_settings_path is not None:
+            persisted = _load_persisted_settings(effective_settings_path)
+            for k in (
+                "llm_provider",
+                "quick_think_provider",
+                "deep_think_provider",
+                "quick_think_llm",
+                "deep_think_llm",
+                "agent_models",
+                "max_debate_rounds",
+                "max_risk_discuss_rounds",
+                "output_language",
+                "openai_reasoning_effort",
+                "google_thinking_level",
+                "anthropic_effort",
+            ):
+                if k in config:
+                    persisted[k] = config[k]
+            _save_persisted_settings(effective_settings_path, persisted)
+        return options()
+
     @app.post("/api/runs", status_code=202)
     def start_run(request: RunRequest):
         try:
-            live = manager.start(request)
+            with auth.lock:
+                if auth.pending:
+                    raise HTTPException(409, "请先完成或取消账号登录，再开始分析。")
+                live = manager.start(request)
         except RunBusy as busy:
             raise HTTPException(409, {"message": "a run is in progress", "active_run": busy.run_id}) from None
         return {"run": live_summary(live).to_dict()}

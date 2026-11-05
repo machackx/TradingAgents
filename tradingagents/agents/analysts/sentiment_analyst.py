@@ -215,6 +215,8 @@ Fill the following fields:
 - **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Mixed when sources point in clearly different directions; Neutral only when all sources are genuinely silent.
 - **overall_score**: A number from 0 (maximally bearish) to 10 (maximally bullish); 5 is neutral. Keep it consistent with overall_band.
 - **confidence**: low / medium / high, based on data quality and sample size.
+- **executive_summary**: Concise 2–3 sentence executive summary distilling the core sentiment stance, primary drivers, and any cross-source divergence.
+- **key_takeaways**: 3 to 4 crisp bullet points highlighting the most important sentiment signals, divergences, or catalysts.
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
 
 {get_language_instruction()}"""

@@ -14,6 +14,8 @@ import { NodeDetail } from "./NodeDetail";
 import { Pipeline } from "./Pipeline";
 import type { PriceLevel } from "./PriceChart";
 import { ReportView } from "./ReportView";
+import { ViewpointDashboard } from "./ViewpointDashboard";
+import { WaterfallView } from "./WaterfallView";
 
 interface Props {
   runId: string;
@@ -23,9 +25,10 @@ interface Props {
 // The chart library is most of the page's weight; it loads when a chart is first shown.
 const PriceChart = lazy(() => import("./PriceChart").then((m) => ({ default: m.PriceChart })));
 
-type Tab = "flow" | "debate" | "report";
+type Tab = "flow" | "timeline" | "debate" | "report";
 const TABS: { key: Tab; label: string }[] = [
   { key: "flow", label: "流程" },
+  { key: "timeline", label: "时间轴" },
   { key: "debate", label: "辩论" },
   { key: "report", label: "报告" },
 ];
@@ -154,10 +157,28 @@ export function RunView({ runId, onEnded }: Props) {
           <details className="small">
             <summary>运行设置</summary>
             <p className="muted">
-              分析师：{run.analysts.map((a) => ANALYST_LABELS[a] ?? a).join("、")} · 模型：{settings.quick_think_llm}
-              （快速）/ {settings.deep_think_llm}（深度），{settings.llm_provider} · 辩论 {settings.max_debate_rounds} 轮 · 风险讨论{" "}
-              {settings.max_risk_discuss_rounds} 轮 · 语言 {settings.output_language} · 版本 {settings.version}
+              分析师：{run.analysts.map((a) => ANALYST_LABELS[a] ?? a).join("、")} · 模型：
+              {settings.quick_think_provider ?? settings.llm_provider} {settings.quick_think_llm}（快速）/{" "}
+              {settings.deep_think_provider ?? settings.llm_provider} {settings.deep_think_llm}（深度） · 辩论{" "}
+              {settings.max_debate_rounds} 轮 · 风险讨论 {settings.max_risk_discuss_rounds} 轮 · 语言{" "}
+              {settings.output_language} · 版本 {settings.version}
+              {settings.agent_models && Object.keys(settings.agent_models).length > 0 && (
+                <>
+                  {" "}
+                  · 角色独立模型：
+                  {Object.entries(settings.agent_models as Record<string, { provider?: string; model?: string }>)
+                    .map(([role, spec]) => `${role}=${spec.provider ?? ""}:${spec.model ?? ""}`)
+                    .join("，")}
+                </>
+              )}
             </p>
+          </details>
+        )}
+
+        {run.instrument && (
+          <details className="small">
+            <summary>标的身份与市场上下文（注入所有智能体）</summary>
+            <pre className="code">{run.instrument}</pre>
           </details>
         )}
       </header>
@@ -169,6 +190,18 @@ export function RunView({ runId, onEnded }: Props) {
         </p>
       )}
       {run.status === "finished" && <DecisionCard run={run} />}
+
+      <ViewpointDashboard
+        run={run}
+        selectedNode={selected}
+        onSelectNode={(nodeId) => {
+          setPicked(nodeId);
+          if (tab !== "flow" && tab !== "timeline") {
+            setTab("flow");
+          }
+        }}
+        onOpenDebateTab={() => setTab("debate")}
+      />
 
       {market?.status === "available" && (
         <section className="panel" aria-label="行情">
@@ -205,6 +238,13 @@ export function RunView({ runId, onEnded }: Props) {
               </button>
             )}
           </section>
+          {selected && <NodeDetail run={run} nodeId={selected} now={now} />}
+          <EventLog events={run.log} />
+        </>
+      )}
+      {tab === "timeline" && (
+        <>
+          <WaterfallView run={run} now={now} selected={selected} onSelect={setPicked} />
           {selected && <NodeDetail run={run} nodeId={selected} now={now} />}
           <EventLog events={run.log} />
         </>

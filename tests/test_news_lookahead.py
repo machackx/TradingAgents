@@ -212,6 +212,71 @@ def test_an_empty_quote_feed_falls_back_to_the_articles_search_tags_with_the_sym
 
 
 @pytest.mark.unit
+def test_a_failed_quote_feed_still_uses_tagged_search_news(monkeypatch):
+    from yfinance.exceptions import YFDataException
+
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    searched = _ticker_with([], monkeypatch, search_news=[
+        _tagged("ABOUT AAPL", today, "AAPL"),
+        _tagged("UNRELATED", today, "GIS"),
+    ])
+
+    def down(*args, **kwargs):
+        raise YFDataException("YAHOO! FINANCE IS CURRENTLY DOWN!")
+
+    monkeypatch.setattr(ynews.yf.Ticker, "get_news", down)
+    out = ynews.get_news_yfinance("AAPL", today, today)
+    assert searched == ["AAPL"]
+    assert "ABOUT AAPL" in out and "UNRELATED" not in out
+    assert "Yahoo search" in out and "sample" in out
+    assert f"Published: {today}" in out
+
+
+@pytest.mark.unit
+def test_a_failed_quote_feed_does_not_let_search_leak_out_of_window_news(monkeypatch):
+    from yfinance.exceptions import YFDataException
+
+    _ticker_with([], monkeypatch, search_news=[
+        _tagged("TOO EARLY", "2026-01-01", "AAPL"),
+        _tagged("TOO LATE", "2026-05-01", "AAPL"),
+    ])
+
+    def down(*args, **kwargs):
+        raise YFDataException("down")
+
+    monkeypatch.setattr(ynews.yf.Ticker, "get_news", down)
+    out = ynews.get_news_yfinance("AAPL", "2026-03-01", "2026-03-08")
+    assert "TOO EARLY" not in out and "TOO LATE" not in out
+    assert "unavailable" in out and "not an absence" in out
+
+
+@pytest.mark.unit
+def test_both_news_endpoints_failing_preserves_the_outage_and_vendor_fallback(monkeypatch):
+    from yfinance.exceptions import YFDataException
+
+    from tradingagents.dataflows import router
+    from tradingagents.dataflows.config import get_config, set_config
+    from tradingagents.dataflows.errors import VendorUnavailableError
+
+    _ticker_with([], monkeypatch)
+
+    def quote_down(*args, **kwargs):
+        raise YFDataException("quote down")
+
+    def search_down(*args, **kwargs):
+        raise ConnectionError("search down")
+
+    monkeypatch.setattr(ynews.yf.Ticker, "get_news", quote_down)
+    monkeypatch.setattr(ynews.yf, "Search", search_down)
+    with pytest.raises(VendorUnavailableError, match="quote feed.*YFDataException.*search.*ConnectionError"):
+        ynews.get_news_yfinance("AAPL", "2026-03-01", "2026-03-08")
+
+    set_config({"data_vendors": {**get_config()["data_vendors"], "news_data": "yfinance,alpha_vantage"}})
+    monkeypatch.setitem(router.VENDOR_METHODS["get_news"], "alpha_vantage", lambda *args: "BACKUP NEWS")
+    assert router.route_to_vendor("get_news", "AAPL", "2026-03-01", "2026-03-08") == "BACKUP NEWS"
+
+
+@pytest.mark.unit
 def test_a_quote_feed_with_articles_is_not_searched(monkeypatch):
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     searched = _ticker_with([_tagged("FEED", today)], monkeypatch)

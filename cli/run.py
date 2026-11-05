@@ -81,6 +81,10 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
             )
     config["quick_think_llm"] = selections["quick_think_llm"]
     config["deep_think_llm"] = selections["deep_think_llm"]
+    if selections.get("agent_models"):
+        merged_agents = dict(config.get("agent_models") or {})
+        merged_agents.update(selections["agent_models"])
+        config["agent_models"] = merged_agents
     config["backend_url"] = selections["backend_url"]
     config["llm_provider"] = selections["llm_provider"].lower()
     # Provider-specific thinking configuration. Only the main provider's is

@@ -40,8 +40,17 @@ def tool_evidence(messages) -> dict:
     return results
 
 
-def prefetched_evidence(**sources: str) -> dict:
-    return {name: {"attempted": 1, "usable": int(usable_result(text))} for name, text in sources.items()}
+def prefetched_evidence(max_chars: int = 20_000, **sources: str) -> dict:
+    return {
+        name: {
+            "attempted": 1,
+            "usable": int(usable_result(text)),
+            "chars": len(text or ""),
+            "content": (text or "")[:max_chars],
+            "truncated": len(text or "") > max_chars,
+        }
+        for name, text in sources.items()
+    }
 
 
 def assess_evidence(state: dict, selected: list[str]) -> dict:

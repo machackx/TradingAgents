@@ -229,6 +229,13 @@ def _run_details(final_state: dict, settings: dict | None) -> list[tuple[str, st
         for tier in ("deep", "quick"):
             provider = s(f"{tier}_think_provider") or s("llm_provider", "?")
             details.append((f"{tier.capitalize()} model", _fields([provider, s(f"{tier}_think_llm", "?")])))
+        agent_models = s("agent_models") or {}
+        if isinstance(agent_models, dict) and agent_models:
+            details.append(("Agent models", " ".join(
+                _group(role, _fields([spec.get("provider", "?"), spec.get("model", "?")]))
+                for role, spec in agent_models.items()
+                if isinstance(spec, dict)
+            )))
         details.append(("Analysts", _fields(analyst_names(s("analysts")))))
         details.append(("Debate rounds", " ".join((
             _group("research", _fields([s("max_debate_rounds", "?")])),

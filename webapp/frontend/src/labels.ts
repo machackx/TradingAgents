@@ -107,7 +107,25 @@ export const FIELD_LABELS: Record<string, string> = {
   overall_band: "情绪区间",
   overall_score: "情绪分 (0–10)",
   confidence: "置信度",
+  key_takeaways: "核心要点",
+  bull_key_points: "多头核心要点",
+  bear_key_points: "空头核心要点",
   narrative: "说明",
+};
+
+export const STANCE_BAND_LABELS: Record<string, { label: string; tone: "up" | "down" | "level" | "warn" }> = {
+  Bullish: { label: "看多", tone: "up" },
+  "Mildly Bullish": { label: "偏多", tone: "up" },
+  Neutral: { label: "中性", tone: "level" },
+  Mixed: { label: "分歧", tone: "warn" },
+  "Mildly Bearish": { label: "偏空", tone: "down" },
+  Bearish: { label: "看空", tone: "down" },
+};
+
+export const CONFIDENCE_LABELS: Record<string, string> = {
+  high: "高置信度",
+  medium: "中置信度",
+  low: "低置信度",
 };
 
 export const ANALYST_LABELS: Record<string, string> = {
@@ -120,6 +138,20 @@ export const ANALYST_LABELS: Record<string, string> = {
 export const DEBATE_LABELS: Record<string, string> = {
   investment: "多空辩论",
   risk: "风险讨论",
+};
+
+export const PREFETCH_SOURCE_LABELS: Record<string, string> = {
+  news: "新闻标题（近 7 日）",
+  stocktwits: "StockTwits 散户社区情绪",
+  reddit: "Reddit 社区讨论",
+  futu: "富途牛牛社区样本",
+};
+
+export const ROLE_LABELS: Record<string, string> = {
+  system: "系统指令 (System)",
+  user: "用户输入 (User)",
+  assistant: "助手回复 (Assistant)",
+  tool: "工具结果 (Tool)",
 };
 
 export const nodeLabel = (id: string | null | undefined) => (id ? NODE_LABELS[id] ?? id : "");

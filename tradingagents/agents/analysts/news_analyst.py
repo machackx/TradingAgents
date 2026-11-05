@@ -8,6 +8,7 @@ from tradingagents.agents.tools import (
     get_news,
     get_prediction_markets,
 )
+from tradingagents.agents.viewpoint import ANALYST_SUMMARY_INSTRUCTION
 
 # The tools this analyst is offered; its tool node is built from the same tuple.
 TOOLS = (
@@ -37,6 +38,7 @@ def create_news_analyst(llm):
             " Do not count reposts as independent confirmations, or an unavailable search as no news."
             " Call get_news for the company before submitting this report. If it fails, report the gap;"
             " do not replace missing company evidence with macro headlines."
+            + ANALYST_SUMMARY_INSTRUCTION
             + get_language_instruction()
         )
 

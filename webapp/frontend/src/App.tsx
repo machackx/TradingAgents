@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
 import { NewRunForm } from "./components/NewRunForm";
 import { RunList } from "./components/RunList";
 import { RunView } from "./components/RunView";
-import type { Options, RunSummary, SavedReport } from "./types";
+import { SubscriptionAccounts } from "./components/SubscriptionAccounts";
+import type { Options, RunSummary, SavedReport, SubscriptionAccount } from "./types";
 import { UpDownContext, useUpDownSetting } from "./updown";
 
 type Route = { page: "new" } | { page: "run"; runId: string };
@@ -19,10 +20,26 @@ const REFRESH_MS = 5000;
 export function App() {
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
   const [options, setOptions] = useState<Options | null>(null);
+  const [accounts, setAccounts] = useState<SubscriptionAccount[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [reports, setReports] = useState<SavedReport[]>([]);
   const [offline, setOffline] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
   const [updown, toggleUpDown] = useUpDownSetting();
+
+  const formOptions = useMemo(() => options ? {
+      ...options,
+      providers: options.providers?.map((provider) => {
+        const account = accounts.find((item) => item.provider === provider.key);
+        return account ? {
+          ...provider,
+          available: account.authenticated && !account.error,
+          detail: account.error || (account.authenticated
+            ? account.email || `已连接（${account.auth_mode ?? "订阅"}）`
+            : account.installed ? "未登录" : "未安装 CLI"),
+        } : provider;
+      }),
+    } : null, [options, accounts]);
 
   const refresh = useCallback(async () => {
     try {
@@ -81,11 +98,15 @@ export function App() {
           onSelect={open}
         />
         <main className="main">
+          <SubscriptionAccounts runActive={runs.some((run) => run.status === "running")}
+            onAuthBusy={setAuthBusy} onAccountsUpdated={setAccounts} />
           {route.page === "run" ? (
             <RunView key={route.runId} runId={route.runId} onEnded={refresh} />
           ) : (
             <NewRunForm
-              options={options}
+              options={formOptions}
+              authBusy={authBusy}
+              onOptionsUpdated={setOptions}
               onStarted={(runId) => {
                 refresh();
                 open(runId);

@@ -91,16 +91,20 @@ def create_trader(llm):
         ]
 
         proposal = invoke_structured(structured_llm, messages, "Trader")
+        raw_plan = ""
         try:
             if proposal is not None:
                 values = proposal.model_dump() if hasattr(proposal, "model_dump") else proposal
                 trader_plan = render_trader_proposal(TraderProposal.model_validate(values))
             else:
                 trader_plan = llm.invoke(messages).content
+            raw_plan = trader_plan
             validation = check_trader_text(trader_plan, state)
         except ValueError as exc:
             validation = {"status": "invalid", "issues": [str(exc).split("\n")[0]], "notes": []}
         if validation["status"] == "invalid":
+            if raw_plan:
+                validation["raw_proposal"] = raw_plan
             trader_plan = "**Action**: REVIEW\n\nProposal rejected by programmatic validation.\n\n" + "\n".join(
                 f"- {issue}" for issue in validation["issues"]
             )

@@ -45,6 +45,9 @@ The debate always contains conflicting arguments; deciding which side is stronge
 Write these sections, in this order, starting with the recommendation on its own line:
 
 - **Recommendation**: exactly one of Buy / Overweight / Hold / Underweight / Sell
+- **Executive Summary**: 1–2 sentences distilling why the winning side carried the debate
+- **Bull Key Points**: 2–3 bullet points of the strongest bull arguments
+- **Bear Key Points**: 2–3 bullet points of the strongest bear risks/counterarguments
 - **Rationale**: which arguments decided it
 - **Strategic Actions**: concrete steps for the trader, sized against a standard allocation
 

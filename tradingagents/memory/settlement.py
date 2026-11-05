@@ -132,6 +132,7 @@ class Settlement:
 
     settled: list[tuple[str, str]] = field(default_factory=list)        # (ticker, date)
     failed: list[tuple[str, str, str]] = field(default_factory=list)    # (ticker, date, reason)
+    outcomes: list[dict] = field(default_factory=list)                  # detailed settled items
 
 
 def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool = True) -> Settlement:
@@ -181,6 +182,17 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
             if memory_log.update_with_outcome(ticker, entry["date"], raw, alpha, days, reflection,
                                               resolution_date=resolution_date):
                 result.settled.append((ticker, entry["date"]))
+                result.outcomes.append({
+                    "ticker": ticker,
+                    "date": entry["date"],
+                    "rating": entry.get("rating"),
+                    "raw_return": round(raw, 4),
+                    "alpha_return": round(alpha, 4),
+                    "holding_days": days,
+                    "benchmark": benchmark,
+                    "resolution_date": resolution_date,
+                    "reflection": reflection,
+                })
     return result
 
 
@@ -195,4 +207,5 @@ def settle_all_pending(memory_log, reflector, config: dict, wait: bool = True) -
         done = settle_pending(ticker, memory_log, reflector, config, wait=wait)
         result.settled.extend(done.settled)
         result.failed.extend(done.failed)
+        result.outcomes.extend(done.outcomes)
     return result

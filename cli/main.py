@@ -68,6 +68,11 @@ def analyze(
         None, "--html/--no-html",
         help="Save the report as one HTML page too, complete_report.html, without asking (default: yes)",
     ),
+    agent_models: str = typer.Option(
+        None,
+        "--agent-models",
+        help="Per-role provider/model overrides (e.g. 'market_analyst=antigravity:gemini-3.8-flash' or 'interactive')",
+    ),
 ):
     """Run an analysis. This is what a bare `tradingagents` does.
 
@@ -90,6 +95,8 @@ def analyze(
 
     try:
         flags = {"ticker": ticker, "date": date, "analysts": analysts, "save": save, "show": show, "html": html}
+        if agent_models is not None:
+            flags["agent_models"] = agent_models
         run_analysis(checkpoint=checkpoint, portfolio=portfolio_context, flags=flags)
     except _NO_CONSOLE_ERRORS:
         # A terminal with no console buffer cannot host the interactive prompts.

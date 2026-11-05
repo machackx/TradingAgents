@@ -31,14 +31,15 @@ from cli.prompts import (
     parse_ticker,
     prompt_openai_compatible_url,
     resolve_backend_url,
+    select_agent_role_models,
     select_analysts,
     select_deep_thinking_agent,
     select_llm_provider,
     select_research_depth,
     select_shallow_thinking_agent,
 )
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.llm_clients.factory import REASONING_EFFORT_PROVIDERS
+from tradingagents.default_config import DEFAULT_CONFIG, _parse_agent_models_env
+from tradingagents.llm_clients.factory import REASONING_EFFORT_PROVIDERS, configured_agent_models
 from tradingagents.llm_clients.openai_client import check_endpoint
 
 
@@ -98,6 +99,11 @@ def _check_tier_providers(main_provider: str, backend_url: str | None = None) ->
             raise typer.Exit(code=1) from None
         if provider not in used:
             used.append(provider)
+    for role_spec in configured_agent_models(DEFAULT_CONFIG).values():
+        role_prov = (role_spec.get("provider") or "").lower()
+        if role_prov and role_prov not in used:
+            check_endpoint(role_prov, None)
+            used.append(role_prov)
     for provider in used:
         ensure_signed_in(provider)
         ensure_api_key(provider)
@@ -321,6 +327,22 @@ def _prompt_selections(prefs, flags):
             selected_llm_provider, remembered.get("deep_think_llm")
         )
 
+    agent_models = dict(DEFAULT_CONFIG.get("agent_models") or {})
+    raw_agent_flag = flags.get("agent_models")
+    if raw_agent_flag is not None:
+        if str(raw_agent_flag).strip().lower() in ("interactive", "ask", "menu"):
+            agent_models = select_agent_role_models(selected_analysts, agent_models)
+        else:
+            agent_models.update(_from_flag(_parse_agent_models_env, str(raw_agent_flag)))
+    elif os.environ.get("TRADINGAGENTS_PROMPT_AGENT_MODELS", "").strip().lower() in ("1", "true", "yes"):
+        agent_models = select_agent_role_models(selected_analysts, agent_models)
+
+    for role_spec in agent_models.values():
+        role_prov = (role_spec.get("provider") or "").lower()
+        if role_prov:
+            ensure_signed_in(role_prov)
+            ensure_api_key(role_prov)
+
     # Step 8: Provider-specific reasoning/thinking configuration. Each knob is
     # settable via its TRADINGAGENTS_* env var; when that var is set (or the
     # provider itself came from env) the prompt is skipped and the configured
@@ -354,7 +376,7 @@ def _prompt_selections(prefs, flags):
             "Configure Claude effort level", ask_anthropic_effort,
         )
 
-    return {
+    result = {
         "ticker": selected_ticker,
         "asset_type": asset_type.value,
         "analysis_date": analysis_date,
@@ -369,6 +391,9 @@ def _prompt_selections(prefs, flags):
         "anthropic_effort": anthropic_effort,
         "output_language": output_language,
     }
+    if agent_models:
+        result["agent_models"] = agent_models
+    return result
 
 
 def get_analysis_date():

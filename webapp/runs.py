@@ -26,6 +26,8 @@ from cli.prompts import detect_asset_type
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
 from tradingagents.graph.events import SCHEMA_VERSION, JsonlEventSink, RunEvents, events_path
+from tradingagents.llm_clients.factory import normalize_role_key
+from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
 
 from .history import report_dir
 
@@ -50,8 +52,16 @@ class RunRequest(BaseModel):
     max_debate_rounds: int | None = Field(None, ge=1, le=5)
     max_risk_discuss_rounds: int | None = Field(None, ge=1, le=5)
     output_language: str | None = Field(None, min_length=1, max_length=40)
+    quick_think_provider: str | None = Field(None, min_length=1, max_length=64)
+    deep_think_provider: str | None = Field(None, min_length=1, max_length=64)
     quick_think_llm: str | None = Field(None, min_length=1, max_length=100)
     deep_think_llm: str | None = Field(None, min_length=1, max_length=100)
+    agent_models: dict[str, dict[str, str]] | None = Field(
+        None, description="Per-role provider and model overrides"
+    )
+    openai_reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = None
+    google_thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+    anthropic_effort: Literal["low", "medium", "high", "max"] | None = None
     tokens: bool = Field(True, description="Stream the models' text as it is generated")
 
     @field_validator("ticker")
@@ -79,6 +89,44 @@ class RunRequest(BaseModel):
             raise ValueError("model id has characters a model id does not use")
         return value
 
+    @field_validator("quick_think_provider", "deep_think_provider")
+    @classmethod
+    def _provider(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in MODEL_OPTIONS:
+            raise ValueError(f"unsupported provider: {value!r}")
+        return cleaned
+
+    @field_validator("agent_models")
+    @classmethod
+    def _validate_agent_models(cls, value: dict[str, dict[str, str]] | None) -> dict[str, dict[str, str]] | None:
+        if value is None:
+            return None
+        normalized: dict[str, dict[str, str]] = {}
+        for raw_role, spec in value.items():
+            canonical = normalize_role_key(raw_role)
+            if not isinstance(spec, dict):
+                raise ValueError(f"agent_models[{raw_role!r}] must be an object")
+            unknown_keys = set(spec.keys()) - {"provider", "model"}
+            if unknown_keys:
+                raise ValueError(f"unexpected keys in agent_models[{raw_role!r}]: {sorted(unknown_keys)}")
+            entry: dict[str, str] = {}
+            prov = (spec.get("provider") or "").strip().lower()
+            mod = (spec.get("model") or "").strip()
+            if prov:
+                if prov not in MODEL_OPTIONS:
+                    raise ValueError(f"unsupported provider {prov!r} for role {canonical!r}")
+                entry["provider"] = prov
+            if mod:
+                if not _MODEL_ID.match(mod):
+                    raise ValueError(f"invalid model id {mod!r} for role {canonical!r}")
+                entry["model"] = mod
+            if entry:
+                normalized[canonical] = entry
+        return normalized
+
     @field_validator("output_language")
     @classmethod
     def _language(cls, value: str | None) -> str | None:
@@ -104,12 +152,65 @@ class RunRequest(BaseModel):
 def build_config(base: dict, request: RunRequest) -> dict:
     """The server's config with the page's choices applied."""
     config = copy.deepcopy(base)
-    for key in ("max_debate_rounds", "max_risk_discuss_rounds", "output_language",
-                "quick_think_llm", "deep_think_llm"):
+    for key in (
+        "max_debate_rounds",
+        "max_risk_discuss_rounds",
+        "output_language",
+        "quick_think_provider",
+        "deep_think_provider",
+        "quick_think_llm",
+        "deep_think_llm",
+        "openai_reasoning_effort",
+        "google_thinking_level",
+        "anthropic_effort",
+    ):
         value = getattr(request, key)
         if value is not None:
             config[key] = value
+    if request.agent_models is not None:
+        merged = dict(config.get("agent_models") or {})
+        merged.update(request.agent_models)
+        config["agent_models"] = merged
     return config
+
+
+class WebSettingsRequest(BaseModel):
+    """Persistent default settings configurable directly from the Web UI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider: str | None = Field(None, min_length=1, max_length=64)
+    quick_think_provider: str | None = Field(None, min_length=1, max_length=64)
+    deep_think_provider: str | None = Field(None, min_length=1, max_length=64)
+    quick_think_llm: str | None = Field(None, min_length=1, max_length=100)
+    deep_think_llm: str | None = Field(None, min_length=1, max_length=100)
+    agent_models: dict[str, dict[str, str]] | None = None
+    max_debate_rounds: int | None = Field(None, ge=1, le=5)
+    max_risk_discuss_rounds: int | None = Field(None, ge=1, le=5)
+    output_language: str | None = Field(None, min_length=1, max_length=40)
+    openai_reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = None
+    google_thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+    anthropic_effort: Literal["low", "medium", "high", "max"] | None = None
+
+    @field_validator("llm_provider", "quick_think_provider", "deep_think_provider")
+    @classmethod
+    def _provider(cls, value: str | None) -> str | None:
+        return RunRequest._provider(value)
+
+    @field_validator("quick_think_llm", "deep_think_llm")
+    @classmethod
+    def _model(cls, value: str | None) -> str | None:
+        return RunRequest._model(value)
+
+    @field_validator("agent_models")
+    @classmethod
+    def _validate_agent_models(cls, value: dict[str, dict[str, str]] | None) -> dict[str, dict[str, str]] | None:
+        return RunRequest._validate_agent_models(value)
+
+    @field_validator("output_language")
+    @classmethod
+    def _language(cls, value: str | None) -> str | None:
+        return RunRequest._language(value)
 
 
 class RunBusy(RuntimeError):

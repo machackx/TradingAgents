@@ -119,6 +119,25 @@ class ResearchPlan(BaseModel):
             "balanced after weighing, or too thin to support a call."
         ),
     )
+    executive_summary: str = Field(
+        default="",
+        description=(
+            "Concise 1–2 sentence executive summary distilling why the winning "
+            "side carried the debate and the core directional takeaway."
+        ),
+    )
+    bull_key_points: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Top 2–3 strongest evidence-backed arguments presented by the Bull Researcher."
+        ),
+    )
+    bear_key_points: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Top 2–3 strongest risks or counter-arguments raised by the Bear Researcher."
+        ),
+    )
     rationale: str = Field(
         description=(
             "Conversational summary of the key points from both sides of the "
@@ -138,13 +157,24 @@ class ResearchPlan(BaseModel):
 
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
-    return "\n".join([
-        f"**Recommendation**: {plan.recommendation.value}",
+    parts = [f"**Recommendation**: {plan.recommendation.value}"]
+    if plan.executive_summary and plan.executive_summary.strip():
+        parts.extend(["", f"**Executive Summary**: {plan.executive_summary.strip()}"])
+    if plan.bull_key_points:
+        pts = [p.strip().lstrip("-*• ").strip() for p in plan.bull_key_points if p and p.strip()]
+        if pts:
+            parts.extend(["", "**Bull Key Points**:", *(f"- {p}" for p in pts)])
+    if plan.bear_key_points:
+        pts = [p.strip().lstrip("-*• ").strip() for p in plan.bear_key_points if p and p.strip()]
+        if pts:
+            parts.extend(["", "**Bear Key Points**:", *(f"- {p}" for p in pts)])
+    parts.extend([
         "",
         f"**Rationale**: {plan.rationale}",
         "",
         f"**Strategic Actions**: {plan.strategic_actions}",
     ])
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +422,20 @@ class SentimentReport(BaseModel):
             "'high' when all three sources returned substantive data."
         ),
     )
+    executive_summary: str = Field(
+        default="",
+        description=(
+            "Concise 2–3 sentence executive summary distilling the core sentiment "
+            "stance, primary drivers, and any cross-source divergence."
+        ),
+    )
+    key_takeaways: list[str] = Field(
+        default_factory=list,
+        description=(
+            "3 to 4 crisp bullet points highlighting the most important sentiment "
+            "signals, retail vs. news divergences, or catalysts."
+        ),
+    )
     narrative: str = Field(
         description=(
             "Full sentiment report covering, in order: "
@@ -411,14 +455,21 @@ class SentimentReport(BaseModel):
 def render_sentiment_report(report: SentimentReport) -> str:
     """Render a SentimentReport to the markdown shape the rest of the system expects.
 
-    The structured header (band + score + confidence) is prepended to the
-    narrative so the saved report is both human-readable and machine-parseable
-    without regex.
+    The structured header (band + score + confidence + optional executive summary
+    and key takeaways) is prepended to the narrative so the saved report is both
+    human-readable and machine-parseable without regex.
     """
-    return "\n".join([
+    lines = [
         f"**Overall Sentiment:** **{report.overall_band.value}** "
         f"(Score: {report.overall_score:.1f}/10)",
         f"**Confidence:** {report.confidence.capitalize()}",
-        "",
-        report.narrative,
-    ])
+    ]
+    if report.executive_summary and report.executive_summary.strip():
+        lines.append(f"**Executive Summary:** {report.executive_summary.strip()}")
+    if report.key_takeaways:
+        pts = [p.strip().lstrip("-*• ").strip() for p in report.key_takeaways if p and p.strip()]
+        if pts:
+            lines.append("**Key Takeaways:**")
+            lines.extend(f"- {p}" for p in pts)
+    lines.extend(["", report.narrative])
+    return "\n".join(lines)

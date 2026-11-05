@@ -1,6 +1,22 @@
+import json
 import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+
+_ROLE_KEYS = (
+    "market_analyst",
+    "social_analyst",
+    "news_analyst",
+    "fundamentals_analyst",
+    "bull_researcher",
+    "bear_researcher",
+    "research_manager",
+    "trader",
+    "aggressive_debator",
+    "conservative_debator",
+    "neutral_debator",
+    "portfolio_manager",
+)
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no
@@ -36,6 +52,9 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_GOOGLE_THINKING_LEVEL":   "google_thinking_level",
     "TRADINGAGENTS_OPENAI_REASONING_EFFORT": "openai_reasoning_effort",
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
+    **{f"TRADINGAGENTS_{role.upper()}_PROVIDER": f"{role}_provider" for role in _ROLE_KEYS},
+    **{f"TRADINGAGENTS_{role.upper()}_LLM": f"{role}_llm" for role in _ROLE_KEYS},
+    **{f"TRADINGAGENTS_{role.upper()}_BACKEND_URL": f"{role}_backend_url" for role in _ROLE_KEYS},
 }
 
 
@@ -66,6 +85,53 @@ def _coerce(value: str, reference):
     return value
 
 
+def _parse_agent_models_env(raw: str) -> dict[str, dict[str, str]]:
+    """Parse TRADINGAGENTS_AGENT_MODELS from JSON or 'role=provider:model,role2=provider2:model2'."""
+    text = raw.strip()
+    if not text:
+        return {}
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"expected valid JSON object, got {raw!r}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"expected JSON object, got {type(parsed).__name__}")
+        result: dict[str, dict[str, str]] = {}
+        for role, spec in parsed.items():
+            if isinstance(spec, dict):
+                entry = {k: str(v).strip() for k, v in spec.items() if v is not None and str(v).strip()}
+                if entry:
+                    result[str(role).strip()] = entry
+            elif isinstance(spec, str) and ":" in spec:
+                prov, mod = spec.split(":", 1)
+                result[str(role).strip()] = {"provider": prov.strip(), "model": mod.strip()}
+        return result
+
+    result = {}
+    for item in text.split(","):
+        part = item.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"expected 'role=provider:model' entry, got {part!r}")
+        role, spec = part.split("=", 1)
+        role = role.strip()
+        spec = spec.strip()
+        if ":" in spec:
+            prov, mod = spec.split(":", 1)
+            entry = {}
+            if prov.strip():
+                entry["provider"] = prov.strip()
+            if mod.strip():
+                entry["model"] = mod.strip()
+        else:
+            entry = {"model": spec}
+        if role and entry:
+            result[role] = entry
+    return result
+
+
 def _apply_env_overrides(config: dict) -> dict:
     """Apply TRADINGAGENTS_* env vars to the config dict in-place."""
     for env_var, key in _ENV_OVERRIDES.items():
@@ -76,6 +142,17 @@ def _apply_env_overrides(config: dict) -> dict:
             config[key] = _coerce(raw, config.get(key))
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
+
+    raw_agent_models = os.environ.get("TRADINGAGENTS_AGENT_MODELS")
+    if raw_agent_models and raw_agent_models.strip():
+        try:
+            parsed_models = _parse_agent_models_env(raw_agent_models)
+        except ValueError as exc:
+            raise ValueError(f"Invalid value for TRADINGAGENTS_AGENT_MODELS: {exc}") from exc
+        merged = dict(config.get("agent_models") or {})
+        merged.update(parsed_models)
+        config["agent_models"] = merged
+
     return config
 
 
@@ -110,6 +187,9 @@ def build_default_config() -> dict:
         "deep_think_provider": None,
         "quick_think_backend_url": None,
         "deep_think_backend_url": None,
+        # Optional per-role provider/model overrides:
+        # e.g. {"market_analyst": {"provider": "antigravity", "model": "gemini-3.8-flash"}}
+        "agent_models": {},
         # Provider-specific thinking configuration
         "google_thinking_level": None,      # "high", "minimal", etc.
         "openai_reasoning_effort": None,    # "medium", "high", "low"

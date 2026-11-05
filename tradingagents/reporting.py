@@ -36,6 +36,15 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
             models = (f"deep {deep_provider} {s('deep_think_llm', '?')}, "
                       f"quick {quick_provider} {s('quick_think_llm', '?')}")
         lines.append(f"- TradingAgents {s('version', '?')}: {models}")
+        agent_models = s("agent_models") or {}
+        if isinstance(agent_models, dict) and agent_models:
+            role_parts = [
+                f"{role} {spec.get('provider', '?')} {spec.get('model', '?')}"
+                for role, spec in agent_models.items()
+                if isinstance(spec, dict)
+            ]
+            if role_parts:
+                lines.append("- Agent models: " + ", ".join(role_parts))
         lines.append(f"- Analysts: {', '.join(analyst_names(s('analysts')))}; "
                      f"research debate rounds {s('max_debate_rounds', '?')}, "
                      f"risk debate rounds {s('max_risk_discuss_rounds', '?')}")

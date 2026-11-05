@@ -9,6 +9,7 @@ from tradingagents.agents.tools import (
     get_income_statement,
     get_insider_transactions,
 )
+from tradingagents.agents.viewpoint import ANALYST_SUMMARY_INSTRUCTION
 
 # The tools this analyst is offered; its tool node is built from the same tuple.
 TOOLS = (
@@ -31,6 +32,7 @@ def create_fundamentals_analyst(llm):
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_insider_transactions` for recent insider buying and selling."
             + " Before finishing a stock report, request the balance sheet, income statement and cashflow."
             " Missing or withheld statements must be named; a company profile alone does not satisfy the evidence requirement."
+            + ANALYST_SUMMARY_INSTRUCTION
             + get_language_instruction()
         )
 

@@ -50,18 +50,76 @@ export interface ModelOption {
   value: string;
 }
 
+export interface ProviderOption {
+  key: string;
+  label: string;
+  available?: boolean;
+  detail?: string;
+  models: { quick: ModelOption[]; deep: ModelOption[] };
+}
+
+export type SubscriptionProvider = "chatgpt" | "codex";
+
+export interface SubscriptionAccount {
+  provider: SubscriptionProvider;
+  label: string;
+  installed: boolean;
+  authenticated: boolean;
+  email: string | null;
+  auth_mode: string | null;
+  plan: string | null;
+  error: string | null;
+}
+
+export interface LoginAttempt {
+  id: string;
+  provider: SubscriptionProvider;
+  status: "starting" | "pending" | "succeeded" | "failed" | "cancelled";
+  auth_url: string | null;
+  expires_at: number;
+  error: string | null;
+}
+
+export interface AccountState {
+  accounts: SubscriptionAccount[];
+  login: LoginAttempt | null;
+  active_run: string | null;
+}
+
+export interface AgentRoleSpec {
+  key: string;
+  node: string;
+  tier: "quick" | "deep";
+  group: string;
+  label: string;
+  zh_label: string;
+}
+
+export interface AgentModelOverride {
+  provider?: string;
+  model?: string;
+}
+
 export interface Options {
   analysts: { key: string; name: string }[];
   provider: string;
+  providers?: ProviderOption[];
+  roles?: AgentRoleSpec[];
   models: { quick: ModelOption[]; deep: ModelOption[] };
   defaults: {
     analysts: string[];
     trade_date: string;
+    quick_think_provider?: string | null;
+    deep_think_provider?: string | null;
     quick_think_llm: string | null;
     deep_think_llm: string | null;
+    agent_models?: Record<string, AgentModelOverride>;
     output_language: string | null;
     max_debate_rounds: number | null;
     max_risk_discuss_rounds: number | null;
+    openai_reasoning_effort?: "low" | "medium" | "high" | "xhigh" | null;
+    google_thinking_level?: "minimal" | "low" | "medium" | "high" | null;
+    anthropic_effort?: "low" | "medium" | "high" | "max" | null;
   };
   limits: { rounds: { min: number; max: number } };
 }
@@ -80,7 +138,28 @@ export interface RunRequest {
   max_debate_rounds?: number;
   max_risk_discuss_rounds?: number;
   output_language?: string;
+  quick_think_provider?: string;
+  deep_think_provider?: string;
   quick_think_llm?: string;
   deep_think_llm?: string;
+  agent_models?: Record<string, AgentModelOverride>;
+  openai_reasoning_effort?: "low" | "medium" | "high" | "xhigh";
+  google_thinking_level?: "minimal" | "low" | "medium" | "high";
+  anthropic_effort?: "low" | "medium" | "high" | "max";
   tokens: boolean;
+}
+
+export interface WebSettingsRequest {
+  llm_provider?: string;
+  quick_think_provider?: string;
+  deep_think_provider?: string;
+  quick_think_llm?: string;
+  deep_think_llm?: string;
+  agent_models?: Record<string, AgentModelOverride>;
+  max_debate_rounds?: number;
+  max_risk_discuss_rounds?: number;
+  output_language?: string;
+  openai_reasoning_effort?: "low" | "medium" | "high" | "xhigh" | null;
+  google_thinking_level?: "minimal" | "low" | "medium" | "high" | null;
+  anthropic_effort?: "low" | "medium" | "high" | "max" | null;
 }

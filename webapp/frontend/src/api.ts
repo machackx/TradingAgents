@@ -1,4 +1,4 @@
-import type { Options, RunRequest, RunSummary, SavedReport } from "./types";
+import type { AccountState, LoginAttempt, Options, RunRequest, RunSummary, SavedReport, SubscriptionProvider, WebSettingsRequest } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -47,7 +47,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  accounts: (refresh = false) => request<AccountState>(`/api/auth${refresh ? "?refresh=true" : ""}`, { cache: "no-store" }),
+  login: (provider: SubscriptionProvider) =>
+    request<{ login: LoginAttempt }>(`/api/auth/${provider}/login`, {
+      method: "POST", headers: { "X-TradingAgents-Auth": "1" },
+    }),
+  logout: (provider: SubscriptionProvider) =>
+    request<{ message: string }>(`/api/auth/${provider}/logout`, {
+      method: "POST", headers: { "X-TradingAgents-Auth": "1" },
+    }),
+  cancelLogin: (loginId: string) =>
+    request<{ login: LoginAttempt }>(`/api/auth/logins/${loginId}/cancel`, {
+      method: "POST", headers: { "X-TradingAgents-Auth": "1" },
+    }),
   options: () => request<Options>("/api/options"),
+  saveSettings: (body: WebSettingsRequest) =>
+    request<Options>("/api/settings", { method: "PUT", body: JSON.stringify(body) }),
   runs: () => request<{ runs: RunSummary[] }>("/api/runs").then((r) => r.runs),
   start: (body: RunRequest) =>
     request<{ run: RunSummary }>("/api/runs", { method: "POST", body: JSON.stringify(body) }).then((r) => r.run),

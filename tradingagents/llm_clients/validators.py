@@ -9,6 +9,8 @@ _ANY_MODEL_PROVIDERS = (
     "ollama", "openrouter", "openai_compatible",
     "mistral", "kimi", "groq", "nvidia", "bedrock", "chatgpt",
     "antigravity", "agy",
+    "claude-cli", "claude_cli", "claude-code",
+    "codex", "codex-cli", "codex_cli",
 )
 
 VALID_MODELS = {

@@ -256,3 +256,49 @@ def test_the_run_reads_its_own_config_and_the_caller_keeps_its_own(tmp_path, mon
 
     assert seen and set(seen) == {"French"}
     assert set(between) == {"German"}
+
+
+class ReasoningStreamingModel(StreamingModel):
+    """ScriptedModel that attaches reasoning_content to its replies and streams thinking."""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        res = super()._generate(messages, stop, run_manager, **kwargs)
+        res.generations[0].message.additional_kwargs["reasoning_content"] = "Step 1: analyze trend."
+        return res
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(content="", additional_kwargs={"reasoning_content": "Step 1: analyze trend."})
+        )
+        yield from super()._stream(messages, stop, run_manager, **kwargs)
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("offline")
+def test_events_include_prompts_reasoning_prefetched_corpus_and_settlement_details(tmp_path, monkeypatch):
+    graph = _graph(tmp_path, monkeypatch, ReasoningStreamingModel(structured=True), **ROUNDS)
+    events = list(RunEvents(graph, "NVDA", TRADE_DATE, tokens=True))
+
+    # LLM calls carry input prompts and reasoning_content
+    llm_calls = _of(events, "llm_call")
+    assert any(c.get("prompts") for c in llm_calls)
+    assert any(c.get("reasoning") == "Step 1: analyze trend." for c in llm_calls)
+
+    # Tool-calling turns emit message events when reasoning is present
+    msgs = _of(events, "message")
+    assert any(m.get("reasoning") == "Step 1: analyze trend." for m in msgs)
+
+    # Token stream includes thinking chunks
+    tokens = _of(events, "token")
+    assert any(t.get("thinking") == "Step 1: analyze trend." for t in tokens)
+
+    # Sentiment Analyst's analyst_evidence includes pre-fetched corpus content
+    ended = {e["node"]: e["update"] for e in _of(events, "node_finished") if e["step"] is None}
+    social_ev = ended["Sentiment Analyst"]["analyst_evidence"]["social"]
+    assert "content" in social_ev["news"] and social_ev["news"]["chars"] > 0
+    assert "content" in social_ev["stocktwits"]
+
+    # Memory Log node reports memory_settlement structure
+    assert "memory_settlement" in ended["Memory Log"]
+    assert "settled" in ended["Memory Log"]["memory_settlement"]
+    assert "failed" in ended["Memory Log"]["memory_settlement"]

@@ -1,0 +1,11 @@
+{
+  "cash": 25000,
+  "currency": "USD",
+  "positions": [
+    {
+      "ticker": "NVDA",
+      "quantity": 100,
+      "average_price": 180
+    }
+  ]
+}

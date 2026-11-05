@@ -8,7 +8,9 @@ export interface ToolCall {
   callId: string;
   name: string;
   args: Record<string, unknown>;
+  step: string | null;
   ts: number;
+  duration?: number | null;
   result?: {
     status: string;
     usable: boolean;
@@ -19,6 +21,13 @@ export interface ToolCall {
   };
 }
 
+export interface PromptMessage {
+  role: string;
+  content: string;
+  truncated?: boolean;
+  chars?: number;
+}
+
 export interface LlmCall {
   model: string | null;
   step: string | null;
@@ -26,7 +35,25 @@ export interface LlmCall {
   tokensOut: number;
   duration: number | null;
   error: string | null;
+  prompts?: PromptMessage[];
+  reasoning?: string | null;
   ts: number;
+}
+
+export interface AgentMessage {
+  content: string;
+  reasoning?: string | null;
+  step: string | null;
+  ts: number;
+}
+
+export interface NodeStepRun {
+  taskId: string;
+  step: string | null; // null = top-level node turn, else subgraph step ("agent", "tools", "wrap_up", "finish")
+  startedAt: number;
+  finishedAt?: number;
+  duration?: number | null;
+  error?: string | null;
 }
 
 export interface Report {
@@ -55,13 +82,17 @@ export interface NodeState {
   phase: string;
   status: NodeStatus;
   startedAt?: number;
+  lastStartedAt?: number;
   finishedAt?: number;
   duration?: number | null;
   step: string | null; // the step inside it now running, for an analyst
+  stepRuns: NodeStepRun[];
   tools: ToolCall[];
   llm: LlmCall[];
   liveText: string; // the model's text as it streams, until its report lands
+  liveThinking: string; // the model's reasoning/thinking stream while in progress
   messages: string[];
+  agentMessages: AgentMessage[];
   reports: Report[];
   turns: DebateTurn[];
   structured: Structured[];
@@ -117,10 +148,13 @@ function blankNode(id: string, phase = "other"): NodeState {
     phase,
     status: "pending",
     step: null,
+    stepRuns: [],
     tools: [],
     llm: [],
     liveText: "",
+    liveThinking: "",
     messages: [],
+    agentMessages: [],
     reports: [],
     turns: [],
     structured: [],
@@ -149,9 +183,11 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
       const old = next.nodes[id] ?? blankNode(id);
       next.nodes[id] = {
         ...old,
+        stepRuns: [...old.stepRuns],
         tools: [...old.tools],
         llm: [...old.llm],
         messages: [...old.messages],
+        agentMessages: [...old.agentMessages],
         reports: [...old.reports],
         turns: [...old.turns],
         structured: [...old.structured],
@@ -187,14 +223,21 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
       }
       case "node_started": {
         const n = node(id);
+        n.stepRuns.push({
+          taskId: e.task_id ?? `${id}-${e.seq}`,
+          step: e.step ?? null,
+          startedAt: e.ts,
+        });
         if (e.step == null) {
           n.status = "running";
-          n.startedAt = e.ts;
+          n.startedAt = n.startedAt ?? e.ts;
+          n.lastStartedAt = e.ts;
           n.error = null;
         } else {
           if (n.status === "pending") {
             n.status = "running";
             n.startedAt = n.startedAt ?? e.ts;
+            n.lastStartedAt = n.lastStartedAt ?? e.ts;
           }
           n.step = e.step;
         }
@@ -202,12 +245,25 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
       }
       case "node_finished": {
         const n = node(id);
+        const stepIdx = n.stepRuns.findIndex((sr) => sr.taskId === e.task_id && sr.finishedAt == null);
+        if (stepIdx >= 0) {
+          n.stepRuns[stepIdx] = {
+            ...n.stepRuns[stepIdx],
+            finishedAt: e.ts,
+            duration: e.duration_s,
+            error: e.error,
+          };
+        }
         if (e.step == null) {
           n.status = e.error ? "failed" : "done";
           n.finishedAt = e.ts;
-          n.duration = e.duration_s;
+          if (e.duration_s != null) {
+            n.duration = (n.duration ?? 0) + e.duration_s;
+          }
+          n.lastStartedAt = undefined;
           n.error = e.error;
           n.step = null;
+          n.liveThinking = "";
           Object.assign(n.update, e.update ?? {});
         } else if (n.step === e.step) {
           n.step = null;
@@ -215,7 +271,13 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
         break;
       }
       case "tool_call": {
-        node(id).tools.push({ callId: e.call_id, name: e.name, args: e.args ?? {}, ts: e.ts });
+        node(id).tools.push({
+          callId: e.call_id,
+          name: e.name,
+          args: e.args ?? {},
+          step: e.step ?? null,
+          ts: e.ts,
+        });
         next.stats.tool_calls += 1;
         break;
       }
@@ -230,43 +292,63 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
           truncated: !!e.truncated,
           ts: e.ts,
         };
-        if (index >= 0) n.tools[index] = { ...n.tools[index], result };
-        else n.tools.push({ callId: e.call_id, name: e.name, args: {}, ts: e.ts, result });
+        if (index >= 0) {
+          const prev = n.tools[index];
+          const duration = prev.ts ? Math.max(0, e.ts - prev.ts) : null;
+          n.tools[index] = { ...prev, duration, result };
+        } else {
+          n.tools.push({ callId: e.call_id, name: e.name, args: {}, step: e.step ?? null, ts: e.ts, result });
+        }
         break;
       }
       case "llm_call": {
-        node(id).llm.push({
+        const n = node(id);
+        n.llm.push({
           model: e.model,
           step: e.step ?? null,
           tokensIn: e.tokens_in ?? 0,
           tokensOut: e.tokens_out ?? 0,
           duration: e.duration_s,
           error: e.error,
+          prompts: e.prompts,
+          reasoning: e.reasoning ?? null,
           ts: e.ts,
         });
+        n.liveThinking = "";
         next.stats.llm_calls += 1;
         next.stats.tokens_in += e.tokens_in ?? 0;
         next.stats.tokens_out += e.tokens_out ?? 0;
         break;
       }
       case "token": {
-        node(id).liveText += e.text ?? "";
+        const n = node(id);
+        if (e.text) n.liveText += e.text;
+        if (e.thinking) n.liveThinking += e.thinking;
         break;
       }
       case "message": {
-        node(id).messages.push(e.content);
+        const n = node(id);
+        if (e.content) n.messages.push(e.content);
+        n.agentMessages.push({
+          content: e.content ?? "",
+          reasoning: e.reasoning ?? null,
+          step: e.step ?? null,
+          ts: e.ts,
+        });
         break;
       }
       case "report": {
         const n = node(id);
         n.reports.push({ section: e.section, content: e.content, ts: e.ts });
         n.liveText = "";
+        n.liveThinking = "";
         break;
       }
       case "debate_turn": {
         const n = node(id);
         n.turns.push({ node: id, debate: e.debate, turn: e.turn, content: e.content, seq: e.seq, ts: e.ts });
         n.liveText = "";
+        n.liveThinking = "";
         break;
       }
       case "structured_output": {
@@ -286,6 +368,8 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
               const n = node(nid);
               n.status = "stopped";
               n.step = null;
+              n.lastStartedAt = undefined;
+              n.liveThinking = "";
             }
           }
         }
@@ -298,6 +382,16 @@ export function applyEvents(state: RunState, events: RunEvent[]): RunState {
     next.log = log.length > LOG_LIMIT ? log.slice(log.length - LOG_LIMIT) : log;
   }
   return next;
+}
+
+/** Total elapsed seconds for a node, including accumulated rounds and any active turn. */
+export function nodeElapsed(n: NodeState, now: number): number | undefined {
+  if (n.status === "running") {
+    const activeStart = n.lastStartedAt ?? n.startedAt;
+    const current = activeStart != null ? Math.max(0, now - activeStart) : 0;
+    return (n.duration ?? 0) + current;
+  }
+  return n.duration ?? undefined;
 }
 
 /** A node that never started in a run that is over was skipped (the evidence check can end a run early). */

@@ -388,6 +388,8 @@ def _llm_provider_table() -> list[tuple[str, str, str | None]]:
         ("OpenAI", "openai", "https://api.openai.com/v1"),
         ("Google", "google", None),
         ("Antigravity CLI (agy)", "antigravity", None),
+        ("Claude CLI (claude)", "claude-cli", None),
+        ("Codex CLI (codex)", "codex", None),
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("ChatGPT (Plus or Pro plan)", "chatgpt", "https://api.openai.com/v1"),
         ("xAI", "xai", "https://api.x.ai/v1"),
@@ -789,3 +791,79 @@ def ask_output_language(default=None) -> str:
         ).ask() or "").strip() or "English"
 
     return choice
+
+
+def select_agent_role_models(
+    selected_analysts=None,
+    default_models: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Interactively assign independent provider and model to individual agent roles."""
+    from tradingagents.llm_clients.factory import AGENT_ROLE_SPECS
+
+    active_analyst_keys = (
+        {f"{getattr(a, 'value', a)}_analyst" for a in selected_analysts}
+        if selected_analysts
+        else {"market_analyst", "social_analyst", "news_analyst", "fundamentals_analyst"}
+    )
+    roles = [
+        spec for spec in AGENT_ROLE_SPECS
+        if spec["group"] != "analysts" or spec["key"] in active_analyst_keys
+    ]
+    overrides: dict[str, dict[str, str]] = {
+        k: dict(v) for k, v in (default_models or {}).items() if isinstance(v, dict)
+    }
+
+    while True:
+        choices = [
+            questionary.Choice(
+                "✓ Done (Finish per-role provider/model selection)",
+                value="__done__",
+            )
+        ]
+        for spec in roles:
+            key = spec["key"]
+            cur = overrides.get(key)
+            status = (
+                f"{cur.get('provider', '?')} / {cur.get('model', '?')}"
+                if cur
+                else f"Default ({spec['tier']} tier)"
+            )
+            choices.append(
+                questionary.Choice(
+                    f"{spec['label']} ({spec['zh_label']}) — [{status}]",
+                    value=key,
+                )
+            )
+
+        picked_role = questionary.select(
+            "Select an Agent Role to customize its Provider & Model:",
+            choices=choices,
+            style=_MENU_STYLE,
+        ).ask()
+
+        if picked_role in (None, "__done__"):
+            break
+
+        role_spec = next(s for s in roles if s["key"] == picked_role)
+        provider_choices = [
+            questionary.Choice(f"Use Default ({role_spec['tier']} tier)", value="__default__"),
+            *[
+                questionary.Choice(display, value=pkey)
+                for display, pkey, _ in _llm_provider_table()
+            ],
+        ]
+        picked_provider = questionary.select(
+            f"Select Provider for {role_spec['label']} ({role_spec['zh_label']}):",
+            choices=provider_choices,
+            style=_MENU_STYLE,
+        ).ask()
+        if picked_provider is None:
+            continue
+        if picked_provider == "__default__":
+            overrides.pop(picked_role, None)
+            continue
+
+        picked_model = _select_model(picked_provider, role_spec["tier"])
+        overrides[picked_role] = {"provider": picked_provider, "model": picked_model}
+
+    return overrides

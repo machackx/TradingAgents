@@ -141,6 +141,62 @@ def _text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _reasoning(message: Any) -> str:
+    """A message's reasoning/thinking text from additional_kwargs or thinking blocks."""
+    if message is None:
+        return ""
+    parts: list[str] = []
+    additional = getattr(message, "additional_kwargs", None) or {}
+    for key in ("reasoning_content", "thinking", "reasoning"):
+        val = additional.get(key)
+        if isinstance(val, str) and val:
+            parts.append(val)
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("thinking", "reasoning"):
+                txt = part.get("thinking") or part.get("reasoning") or part.get("text") or ""
+                if txt:
+                    parts.append(str(txt))
+    return "".join(parts)
+
+
+def _format_prompts(messages_or_prompts: Any, max_chars: int = 6000) -> list[dict]:
+    """Turn a chat model's input message batch or prompt strings into JSON-ready dicts."""
+    if not messages_or_prompts:
+        return []
+    batch = messages_or_prompts
+    if isinstance(batch, list) and batch and isinstance(batch[0], list):
+        batch = batch[0]
+    if not isinstance(batch, list):
+        batch = [batch]
+    role_map = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}
+    formatted: list[dict] = []
+    for item in batch:
+        if isinstance(item, str):
+            role, text = "user", item
+        elif isinstance(item, dict):
+            role = str(item.get("role") or item.get("type") or "user")
+            text = _text(item.get("content", ""))
+        else:
+            raw_type = getattr(item, "type", "user")
+            role = role_map.get(raw_type, str(raw_type))
+            text = _text(getattr(item, "content", ""))
+            tool_calls = getattr(item, "tool_calls", None)
+            if tool_calls:
+                calls = ", ".join(
+                    f"{c.get('name')}({json.dumps(c.get('args', {}), ensure_ascii=False, default=str)})"
+                    for c in tool_calls
+                )
+                text = f"{text}\n[Tool calls: {calls}]".strip()
+        entry: dict[str, Any] = {"role": role, "content": text[:max_chars]}
+        if len(text) > max_chars:
+            entry["truncated"] = True
+            entry["chars"] = len(text)
+        formatted.append(entry)
+    return formatted
+
+
 def _snake(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
@@ -195,32 +251,56 @@ class _RunCallbacks(BaseCallbackHandler):
             self._chains.pop(run_id, None)
 
     def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None, **kwargs) -> None:
+        prompts = _format_prompts(messages)
         with self._lock:
-            self._models[run_id] = (metadata or {}, time.monotonic())
+            self._models[run_id] = (metadata or {}, time.monotonic(), prompts)
 
     def on_llm_start(self, serialized, prompts, *, run_id, metadata=None, **kwargs) -> None:
+        formatted = _format_prompts(prompts)
         with self._lock:
-            self._models[run_id] = (metadata or {}, time.monotonic())
+            self._models[run_id] = (metadata or {}, time.monotonic(), formatted)
 
     def on_llm_end(self, response, *, run_id, **kwargs) -> None:
         usage = {}
+        reasoning = ""
         with contextlib.suppress(IndexError, AttributeError, TypeError):
-            usage = getattr(response.generations[0][0].message, "usage_metadata", None) or {}
-        self._model_done(run_id, usage.get("input_tokens", 0), usage.get("output_tokens", 0), None)
+            msg = response.generations[0][0].message
+            usage = getattr(msg, "usage_metadata", None) or {}
+            reasoning = _reasoning(msg).strip()
+        self._model_done(
+            run_id,
+            usage.get("input_tokens", 0),
+            usage.get("output_tokens", 0),
+            None,
+            reasoning=reasoning or None,
+        )
 
     def on_llm_error(self, error, *, run_id, **kwargs) -> None:
         self._model_done(run_id, 0, 0, f"{type(error).__name__}: {error}")
 
-    def _model_done(self, run_id, tokens_in: int, tokens_out: int, error: str | None) -> None:
+    def _model_done(
+        self,
+        run_id,
+        tokens_in: int,
+        tokens_out: int,
+        error: str | None,
+        *,
+        reasoning: str | None = None,
+    ) -> None:
         with self._lock:
-            metadata, started = self._models.pop(run_id, ({}, None))
+            metadata, started, prompts = self._models.pop(run_id, ({}, None, []))
         node, step = _locate(metadata)
-        self._pending.put(("llm_call", {
+        payload: dict[str, Any] = {
             "node": node, "step": step, "model": metadata.get("ls_model_name"),
             "tokens_in": tokens_in or 0, "tokens_out": tokens_out or 0,
             "duration_s": round(time.monotonic() - started, 3) if started is not None else None,
             "error": error,
-        }))
+        }
+        if prompts:
+            payload["prompts"] = prompts
+        if reasoning:
+            payload["reasoning"] = reasoning
+        self._pending.put(("llm_call", payload))
 
     def drain(self) -> Iterator[tuple[str, dict]]:
         while True:
@@ -420,8 +500,12 @@ class RunEvents:
                 )
             elif isinstance(message, AIMessage) and message.tool_calls:
                 text = _text(message.content).strip()
-                if text:
-                    yield self._event("message", node=node, step=step, content=text)
+                reasoning = _reasoning(message).strip()
+                if text or reasoning:
+                    msg_fields: dict[str, Any] = {"node": node, "step": step, "content": text}
+                    if reasoning:
+                        msg_fields["reasoning"] = reasoning
+                    yield self._event("message", **msg_fields)
                 for call in message.tool_calls:
                     self._stats["tool_calls"] += 1
                     yield self._event("tool_call", node=node, step=step, call_id=call.get("id"),
@@ -434,9 +518,13 @@ class RunEvents:
         if not isinstance(message, AIMessageChunk):
             return
         text = _text(message.content)
-        if text:
+        thinking = _reasoning(message)
+        if text or thinking:
             node, step = _locate(metadata)
-            yield self._event("token", node=node, step=step, text=text)
+            fields: dict[str, Any] = {"node": node, "step": step, "text": text}
+            if thinking:
+                fields["thinking"] = thinking
+            yield self._event("token", **fields)
 
     def _drain(self, callbacks: _RunCallbacks) -> Iterator[dict]:
         for kind, payload in callbacks.drain():

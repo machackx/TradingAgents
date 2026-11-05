@@ -4,14 +4,27 @@ import {
   DEBATE_LABELS,
   FIELD_LABELS,
   NODE_STATUS_LABELS,
+  PREFETCH_SOURCE_LABELS,
+  ROLE_LABELS,
   SCHEMA_LABELS,
   SECTION_LABELS,
   STEP_LABELS,
   nodeLabel,
 } from "../labels";
-import { debateTurns, displayStatus, type NodeState, type RunState, type ToolCall } from "../runState";
+import {
+  debateTurns,
+  displayStatus,
+  nodeElapsed,
+  type LlmCall,
+  type NodeState,
+  type NodeStepRun,
+  type RunState,
+  type ToolCall,
+} from "../runState";
 import { NodeStatusDot, RatingBadge } from "./Badges";
 import { Markdown } from "./Markdown";
+import { ConfidencePill, DivergingScoreBar, StancePill } from "./ViewpointDashboard";
+import { extractResearcherTurnViewpoint, parseReportViewpoint } from "../viewpoint";
 
 const DEBATE_OF: Record<string, string> = {
   "Bull Researcher": "investment",
@@ -34,14 +47,21 @@ export function NodeDetail({ run, nodeId, now }: Props) {
   const n = run.nodes[nodeId];
   if (!n) return null;
   const status = displayStatus(run, n);
-  const elapsed = status === "running" && n.startedAt ? now - n.startedAt : n.duration;
+  const elapsed = nodeElapsed(n, now);
   const tokensIn = n.llm.reduce((s, c) => s + c.tokensIn, 0);
   const tokensOut = n.llm.reduce((s, c) => s + c.tokensOut, 0);
   const models = [...new Set(n.llm.map((c) => c.model).filter(Boolean))].join("、");
   const debate = DEBATE_OF[nodeId];
   const judged = JUDGE_OF[nodeId];
+  const topRuns = n.stepRuns.filter((sr) => sr.step == null);
+  const subSteps = n.stepRuns.filter((sr) => sr.step != null);
   const empty =
-    !n.liveText && !n.reports.length && !n.turns.length && !n.structured.length && !n.tools.length &&
+    !n.liveThinking &&
+    !n.liveText &&
+    !n.reports.length &&
+    !n.turns.length &&
+    !n.structured.length &&
+    !n.tools.length &&
     !Object.keys(n.update).length;
 
   return (
@@ -54,6 +74,7 @@ export function NodeDetail({ run, nodeId, now }: Props) {
         <div className="detail-meta small muted">
           <span>{NODE_STATUS_LABELS[status]}</span>
           {status === "running" && n.step && <span>{STEP_LABELS[n.step] ?? n.step}</span>}
+          {topRuns.length > 1 && <span>共执行 {topRuns.length} 轮</span>}
           {elapsed != null && <span>耗时 {fmtDuration(elapsed)}</span>}
           {n.llm.length > 0 && (
             <span>
@@ -68,16 +89,19 @@ export function NodeDetail({ run, nodeId, now }: Props) {
       {status === "pending" && <p className="muted">尚未开始。</p>}
       {status === "skipped" && (
         <p className="muted">
-          这一步没有执行。证据检查判定资料不足时，流程会跳过辩论和交易，直接由投资组合经理给出“待复核”。
+          这一步没有执行。证据检查判定资料不足或交易提议未通过程序校验时，流程会跳过中间环节，直接由投资组合经理给出“待复核”。
         </p>
       )}
       {status === "stopped" && <p className="muted">运行在这一步进行中时结束了（取消或出错）。</p>}
 
-      {n.structured.map((s) => (
-        <StructuredCard key={s.schema} schema={s.schema} data={s.data} />
-      ))}
-
-      {debate && <Conversation run={run} debate={debate} highlight={nodeId} />}
+      {n.liveThinking && (
+        <article className="live live-thinking">
+          <h3>
+            正在深度思考 <span className="caret" aria-hidden />
+          </h3>
+          <pre className="code thinking-stream">{n.liveThinking}</pre>
+        </article>
+      )}
 
       {n.liveText && (
         <article className="live">
@@ -88,21 +112,59 @@ export function NodeDetail({ run, nodeId, now }: Props) {
         </article>
       )}
 
+      {(subSteps.length > 0 || topRuns.length > 1) && (
+        <ExecutionTimeline node={n} steps={subSteps.length > 0 ? subSteps : topRuns} now={now} />
+      )}
+
+      {n.structured.map((s, i) => (
+        <StructuredCard key={`${s.schema}-${i}`} schema={s.schema} data={s.data} />
+      ))}
+
+      {debate && <Conversation run={run} debate={debate} highlight={nodeId} />}
+
       {!debate &&
-        n.reports.map((r) =>
+        n.reports.map((r) => {
           // A structured agent's report repeats its card above; keep it at hand, folded.
-          n.structured.length ? (
-            <details key={r.section} className="block">
-              <summary>{SECTION_LABELS[r.section] ?? r.section}原文</summary>
-              <Markdown text={r.content} />
-            </details>
-          ) : (
+          if (n.structured.length) {
+            return (
+              <details key={r.section} className="block">
+                <summary>{SECTION_LABELS[r.section] ?? r.section}原文</summary>
+                <Markdown text={r.content} />
+              </details>
+            );
+          }
+          const vp = parseReportViewpoint(r.content);
+          const hasSummaryCard = Boolean(vp.stance || vp.score != null || vp.executiveSummary || vp.keyTakeaways.length);
+          return (
             <article key={r.section} className="report">
               <h3>{SECTION_LABELS[r.section] ?? r.section}</h3>
-              <Markdown text={r.content} />
+              {hasSummaryCard && (
+                <div className="vp-detail-summary">
+                  <div className="vp-detail-summary-head">
+                    <strong>核心观点简述 (Executive Summary)</strong>
+                    <div className="vp-card-badges">
+                      {vp.stance && <StancePill stance={vp.stance} />}
+                      <ConfidencePill confidence={vp.confidence} />
+                    </div>
+                  </div>
+                  {vp.score != null && <DivergingScoreBar score={vp.score} stance={vp.stance} label="维度信号评分" />}
+                  {vp.executiveSummary && <p className="vp-exec-text">{vp.executiveSummary}</p>}
+                  {vp.keyTakeaways.length > 0 && (
+                    <div className="vp-takeaways">
+                      <div className="vp-box-label">核心要点</div>
+                      <ul>
+                        {vp.keyTakeaways.map((pt, i) => (
+                          <li key={i}>{pt}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              <Markdown text={hasSummaryCard && vp.bodyMarkdown ? vp.bodyMarkdown : r.content} />
             </article>
-          ),
-        )}
+          );
+        })}
 
       {judged && debateTurns(run, judged).length > 0 && (
         <details className="block">
@@ -111,14 +173,26 @@ export function NodeDetail({ run, nodeId, now }: Props) {
         </details>
       )}
 
-      {n.messages.length > 0 && (
-        <details className="block">
-          <summary>调用工具时的说明（{n.messages.length}）</summary>
-          {n.messages.map((m, i) => (
-            <p key={i} className="small">
-              {m}
-            </p>
-          ))}
+      {n.agentMessages.length > 0 && (
+        <details className="block" open={n.agentMessages.some((m) => !!m.reasoning)}>
+          <summary>调用工具时的思考与说明（{n.agentMessages.length}）</summary>
+          <div className="agent-messages">
+            {n.agentMessages.map((m, i) => (
+              <div key={i} className="agent-message-item">
+                <div className="muted small">
+                  第 {i + 1} 次说明 · {fmtClock(m.ts)}
+                  {m.step && ` · ${STEP_LABELS[m.step] ?? m.step}`}
+                </div>
+                {m.reasoning && (
+                  <details className="thinking-box" open>
+                    <summary className="small">思考链（Reasoning）</summary>
+                    <pre className="code">{m.reasoning}</pre>
+                  </details>
+                )}
+                {m.content && <p className="small">{m.content}</p>}
+              </div>
+            ))}
+          </div>
         </details>
       )}
 
@@ -130,21 +204,124 @@ export function NodeDetail({ run, nodeId, now }: Props) {
   );
 }
 
+/** Step-by-step execution trace inside an analyst subgraph or multi-round debater. */
+function ExecutionTimeline({ node, steps, now }: { node: NodeState; steps: NodeStepRun[]; now: number }) {
+  return (
+    <details className="block step-timeline-panel" open={node.status === "running" || steps.some((s) => s.step === "wrap_up")}>
+      <summary>
+        执行步骤时间线（{steps.length} 步）
+        {steps.some((s) => s.step === "wrap_up") && <span className="tag tag-unusable">触发工具轮数上限收尾</span>}
+      </summary>
+      <ol className="step-timeline">
+        {steps.map((sr, i) => {
+          const running = sr.finishedAt == null && node.status === "running";
+          const dur = sr.duration ?? (running ? Math.max(0, now - sr.startedAt) : sr.finishedAt ? sr.finishedAt - sr.startedAt : null);
+          const endTs = sr.finishedAt ?? Infinity;
+          // Match tools and LLM calls initiated within this step's window
+          const stepTools = node.tools.filter(
+            (t) => (sr.step == null || t.step === sr.step || (sr.step === "tools" && t.step === "agent")) &&
+              t.ts >= sr.startedAt - 0.05 && t.ts <= endTs + 0.05,
+          );
+          const stepLlms = node.llm.filter(
+            (c) => (sr.step == null || c.step === sr.step) && c.ts >= sr.startedAt - 0.05 && c.ts <= endTs + 0.05,
+          );
+          const stepMsgs = node.agentMessages.filter(
+            (m) => (sr.step == null || m.step === sr.step) && m.ts >= sr.startedAt - 0.05 && m.ts <= endTs + 0.05,
+          );
+          const stepLabel = sr.step ? STEP_LABELS[sr.step] ?? sr.step : `第 ${i + 1} 轮发言`;
+
+          return (
+            <li key={sr.taskId || i} className={`step-item${running ? " step-running" : ""}${sr.error ? " step-error" : ""}`}>
+              <div className="step-head">
+                <span className="step-badge">{i + 1}</span>
+                <strong>{stepLabel}</strong>
+                {sr.step && <code className="muted">{sr.step}</code>}
+                <span className="muted small">{fmtClock(sr.startedAt)}</span>
+                {dur != null && <span className="pill">{fmtDuration(dur)}</span>}
+                {running && <span className="pill pill-running">进行中</span>}
+                {sr.error && <span className="tag tag-error">{sr.error}</span>}
+              </div>
+              {sr.step === "wrap_up" && (
+                <p className="small warn">
+                  已达到单节点工具调用最大轮数上限，系统注入收尾指令要求智能体停止调用工具并立即撰写最终报告。
+                </p>
+              )}
+              {(stepLlms.length > 0 || stepTools.length > 0 || stepMsgs.length > 0) && (
+                <div className="step-body small">
+                  {stepLlms.map((c, idx) => (
+                    <div key={idx} className="step-meta-line muted">
+                      模型 <code>{c.model ?? "default"}</code> · 输入 {fmtCount(c.tokensIn)} / 输出 {fmtCount(c.tokensOut)} tokens
+                      {c.duration != null && ` · ${fmtDuration(c.duration)}`}
+                      {c.reasoning && <span className="tag tag-ok">含思考链</span>}
+                    </div>
+                  ))}
+                  {stepMsgs.map((m, idx) =>
+                    m.content ? (
+                      <div key={idx} className="step-msg">
+                        💬 {m.content}
+                      </div>
+                    ) : null,
+                  )}
+                  {stepTools.length > 0 && (
+                    <div className="step-tools">
+                      🔧 调用：
+                      {stepTools.map((t, idx) => (
+                        <code key={idx} className="step-tool-chip">
+                          {t.name}
+                          {t.duration != null ? ` (${fmtDuration(t.duration)})` : ""}
+                        </code>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
 function StructuredCard({ schema, data }: { schema: string; data: Record<string, unknown> }) {
-  const entries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined && v !== "");
-  const short = entries.filter(([, v]) => typeof v !== "string" || v.length <= 60);
+  const entries = Object.entries(data).filter(
+    ([, v]) => v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0),
+  );
+  const short = entries.filter(([, v]) => !Array.isArray(v) && (typeof v !== "string" || v.length <= 60));
+  const lists = entries.filter(([, v]) => Array.isArray(v));
   const long = entries.filter(([, v]) => typeof v === "string" && v.length > 60);
+  const scoreVal = typeof data.overall_score === "number" ? data.overall_score : null;
+  const bandVal = typeof data.overall_band === "string" ? data.overall_band : null;
   return (
     <article className="structured">
       <h3>{SCHEMA_LABELS[schema] ?? schema}</h3>
+      {scoreVal != null && <DivergingScoreBar score={scoreVal} stance={bandVal as any} label="情绪量化分" />}
       <dl className="fields">
         {short.map(([key, value]) => (
           <div key={key}>
             <dt>{FIELD_LABELS[key] ?? key}</dt>
-            <dd>{RATING_FIELDS.has(key) ? <RatingBadge rating={String(value)} /> : String(value)}</dd>
+            <dd>
+              {RATING_FIELDS.has(key) ? (
+                <RatingBadge rating={String(value)} />
+              ) : key === "overall_band" ? (
+                <StancePill stance={String(value)} />
+              ) : (
+                String(value)
+              )}
+            </dd>
           </div>
         ))}
       </dl>
+      {lists.map(([key, value]) => (
+        <div key={key} className="field-long">
+          <h4>{FIELD_LABELS[key] ?? key}</h4>
+          <ul className="small">
+            {(value as unknown[]).map((item, idx) => (
+              <li key={idx}>{String(item)}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
       {long.map(([key, value]) => (
         <div key={key} className="field-long">
           <h4>{FIELD_LABELS[key] ?? key}</h4>
@@ -161,20 +338,42 @@ function Conversation({ run, debate, highlight }: { run: RunState; debate: strin
   return (
     <article className="conversation">
       <h3>{DEBATE_LABELS[debate] ?? debate}</h3>
-      {turns.map((t) => (
-        <div
-          key={t.seq}
-          className={`turn turn-${t.node.split(" ")[0].toLowerCase()}${t.node === highlight ? " mine" : ""}`}
-        >
-          <div className="turn-head small">
-            <strong>{nodeLabel(t.node)}</strong>
-            <span className="muted">
-              第 {t.turn} 次发言 · {fmtClock(t.ts)}
-            </span>
+      {turns.map((t) => {
+        const vp = debate === "investment" ? extractResearcherTurnViewpoint(t) : null;
+        return (
+          <div
+            key={t.seq}
+            className={`turn turn-${t.node.split(" ")[0].toLowerCase()}${t.node === highlight ? " mine" : ""}`}
+          >
+            <div className="turn-head small">
+              <strong>{nodeLabel(t.node)}</strong>
+              {vp?.stance && <StancePill stance={vp.stance} />}
+              {vp?.conviction != null && <span className="pill">信心 {vp.conviction.toFixed(1)}/10</span>}
+              <span className="muted">
+                第 {t.turn} 次发言 · {fmtClock(t.ts)}
+              </span>
+            </div>
+            {vp && (vp.executiveSummary || vp.keyArguments.length > 0) && (
+              <div className="vp-turn-summary">
+                {vp.executiveSummary && (
+                  <p className="vp-exec-text">
+                    <strong>核心观点：</strong>
+                    {vp.executiveSummary}
+                  </p>
+                )}
+                {vp.keyArguments.length > 0 && (
+                  <ul className="small">
+                    {vp.keyArguments.map((arg, idx) => (
+                      <li key={idx}>{arg}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            <Markdown text={vp?.bodyMarkdown ? vp.bodyMarkdown : t.content.replace(SPEAKER_PREFIX, "")} />
           </div>
-          <Markdown text={t.content.replace(SPEAKER_PREFIX, "")} />
-        </div>
-      ))}
+        );
+      })}
     </article>
   );
 }
@@ -191,18 +390,27 @@ function ToolList({ tools }: { tools: ToolCall[] }) {
             <li key={`${t.callId}-${i}`}>
               <details>
                 <summary>
+                  <span className="muted small">#{i + 1}</span>
                   <code>{t.name}</code>
                   <span className="muted small args">{shortJson(t.args, 70)}</span>
                   <span className={`tag tag-${state}`}>{label}</span>
+                  {t.duration != null && <span className="muted small">{fmtDuration(t.duration)}</span>}
                   {t.result && <span className="muted small">{fmtCount(t.result.chars)} 字</span>}
+                  <span className="muted small">{fmtClock(t.ts)}</span>
                 </summary>
-                <pre className="code">{JSON.stringify(t.args, null, 2)}</pre>
-                {t.result && (
-                  <>
-                    <pre className="code result">{t.result.content}</pre>
-                    {t.result.truncated && <p className="muted small">内容过长，只保留了前面部分。</p>}
-                  </>
-                )}
+                <div className="tool-detail-body">
+                  <div className="small muted">调用参数：</div>
+                  <pre className="code">{JSON.stringify(t.args, null, 2)}</pre>
+                  {t.result && (
+                    <>
+                      <div className="small muted">
+                        返回内容（{fmtClock(t.result.ts)}，共 {fmtCount(t.result.chars)} 字）：
+                      </div>
+                      <pre className="code result">{t.result.content}</pre>
+                      {t.result.truncated && <p className="muted small">内容过长，只保留了前面部分。</p>}
+                    </>
+                  )}
+                </div>
               </details>
             </li>
           );
@@ -225,6 +433,7 @@ function UpdateView({ node }: { node: NodeState }) {
         if (key === "data_quality") return <DataQuality key={key} data={value} />;
         if (key === "analyst_evidence") return <Evidence key={key} data={value} />;
         if (key === "trader_validation") return <Validation key={key} data={value} />;
+        if (key === "memory_settlement") return <MemorySettlementView key={key} data={value} />;
         if (key === "memory_note")
           return value ? (
             <p key={key} className="warn">
@@ -320,32 +529,73 @@ function DataQuality({ data }: { data: Record<string, any> }) {
   );
 }
 
-function Evidence({ data }: { data: Record<string, Record<string, { attempted: number; usable: number }>> }) {
+interface EvidenceEntry {
+  attempted: number;
+  usable: number;
+  chars?: number;
+  content?: string;
+  truncated?: boolean;
+}
+
+function Evidence({ data }: { data: Record<string, Record<string, EvidenceEntry>> }) {
   const rows = Object.entries(data ?? {}).flatMap(([analyst, tools]) =>
     Object.entries(tools).map(([tool, counts]) => ({ analyst, tool, ...counts })),
   );
   if (!rows.length) return null;
+  const withContent = rows.filter((r) => typeof r.content === "string" && r.content.length > 0);
   return (
-    <table className="table small">
-      <thead>
-        <tr>
-          <th>数据来源</th>
-          <th>尝试</th>
-          <th>可用</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={`${r.analyst}-${r.tool}`} className={r.usable ? "" : "bad"}>
-            <td>
-              <code>{r.tool}</code>
-            </td>
-            <td>{r.attempted}</td>
-            <td>{r.usable}</td>
+    <div>
+      <table className="table small">
+        <thead>
+          <tr>
+            <th>数据来源</th>
+            <th>尝试</th>
+            <th>可用</th>
+            {withContent.length > 0 && <th>字数</th>}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.analyst}-${r.tool}`} className={r.usable ? "" : "bad"}>
+              <td>
+                <code>{r.tool}</code>
+                {PREFETCH_SOURCE_LABELS[r.tool] && <span className="muted"> · {PREFETCH_SOURCE_LABELS[r.tool]}</span>}
+              </td>
+              <td>{r.attempted}</td>
+              <td>{r.usable}</td>
+              {withContent.length > 0 && <td>{r.chars != null ? `${fmtCount(r.chars)} 字` : "—"}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {withContent.length > 0 && (
+        <div className="prefetched-sources">
+          <h4>预取语料与 Jev 筛选明细（{withContent.length} 项）</h4>
+          <ul className="tools">
+            {withContent.map((r) => {
+              const firstLine = (r.content ?? "").split("\n")[0] ?? "";
+              const jevNote = firstLine.startsWith("Screened by Jev:") || firstLine.startsWith("<Jev screening") ? firstLine : null;
+              return (
+                <li key={`corpus-${r.analyst}-${r.tool}`}>
+                  <details>
+                    <summary>
+                      <code>{r.tool}</code>
+                      <span>{PREFETCH_SOURCE_LABELS[r.tool] ?? r.tool}</span>
+                      <span className={`tag tag-${r.usable ? "ok" : "unusable"}`}>{r.usable ? "可用" : "无可用数据"}</span>
+                      {r.chars != null && <span className="muted small">{fmtCount(r.chars)} 字</span>}
+                      {jevNote && <span className="pill">{jevNote}</span>}
+                    </summary>
+                    <pre className="code result">{r.content}</pre>
+                    {r.truncated && <p className="muted small">内容过长，只保留了前面部分。</p>}
+                  </details>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -369,6 +619,67 @@ function Validation({ data }: { data: Record<string, any> }) {
           ))}
         </ul>
       )}
+      {data.raw_proposal && (
+        <details className="block">
+          <summary>查看被程序校验拦截前的模型原始提议</summary>
+          <Markdown text={String(data.raw_proposal)} />
+        </details>
+      )}
+    </div>
+  );
+}
+
+function MemorySettlementView({ data }: { data: Record<string, any> }) {
+  if (!data) return null;
+  const settled: Record<string, any>[] = data.settled ?? [];
+  const failed: Record<string, any>[] = data.failed ?? [];
+  if (!settled.length && !failed.length && !data.error) {
+    return <p className="muted small">本次运行没有需要新结算的到期历史决策。</p>;
+  }
+  return (
+    <div className="memory-settlement">
+      {data.error && <p className="warn small">结算出错：{data.error}</p>}
+      {settled.length > 0 && (
+        <details open>
+          <summary>本次新结算的历史决策（{settled.length} 条）</summary>
+          <ul className="tools">
+            {settled.map((item, idx) => (
+              <li key={`${item.ticker}-${item.date}-${idx}`}>
+                <details open={settled.length === 1}>
+                  <summary>
+                    <strong>{item.ticker}</strong>
+                    <span className="muted small">{item.date}</span>
+                    {item.rating && <RatingBadge rating={String(item.rating)} />}
+                    {item.raw_return != null && (
+                      <span className="small">
+                        {item.holding_days ?? 5} 日收益 {(Number(item.raw_return) * 100).toFixed(2)}%
+                      </span>
+                    )}
+                    {item.alpha_return != null && (
+                      <span className="pill">
+                        Alpha (vs {item.benchmark ?? "SPY"}): {(Number(item.alpha_return) * 100).toFixed(2)}%
+                      </span>
+                    )}
+                  </summary>
+                  {item.reflection && <pre className="code">{item.reflection}</pre>}
+                </details>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {failed.length > 0 && (
+        <details open>
+          <summary className="bad">未能结算的决策（{failed.length} 条，保持待结算）</summary>
+          <ul className="small bad">
+            {failed.map((f, idx) => (
+              <li key={`${f.ticker}-${f.date}-${idx}`}>
+                <strong>{f.ticker}</strong> ({f.date})：{f.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
@@ -376,10 +687,11 @@ function Validation({ data }: { data: Record<string, any> }) {
 function LlmTable({ node }: { node: NodeState }) {
   return (
     <details className="block">
-      <summary>模型调用明细（{node.llm.length}）</summary>
+      <summary>模型调用与 Prompt 明细（{node.llm.length}）</summary>
       <table className="table small">
         <thead>
           <tr>
+            <th>#</th>
             <th>结束时间</th>
             <th>步骤</th>
             <th>模型</th>
@@ -390,14 +702,7 @@ function LlmTable({ node }: { node: NodeState }) {
         </thead>
         <tbody>
           {node.llm.map((c, i) => (
-            <tr key={i} className={c.error ? "bad" : ""}>
-              <td>{fmtClock(c.ts)}</td>
-              <td>{c.step ? STEP_LABELS[c.step] ?? c.step : "—"}</td>
-              <td>{c.model ?? "—"}</td>
-              <td>{fmtCount(c.tokensIn)}</td>
-              <td>{fmtCount(c.tokensOut)}</td>
-              <td>{c.error ? c.error : fmtDuration(c.duration)}</td>
-            </tr>
+            <LlmRow key={i} index={i} call={c} />
           ))}
         </tbody>
       </table>
@@ -405,3 +710,53 @@ function LlmTable({ node }: { node: NodeState }) {
   );
 }
 
+function LlmRow({ index, call: c }: { index: number; call: LlmCall }) {
+  const hasInspect = (c.prompts && c.prompts.length > 0) || !!c.reasoning;
+  return (
+    <>
+      <tr className={c.error ? "bad" : ""}>
+        <td>{index + 1}</td>
+        <td>{fmtClock(c.ts)}</td>
+        <td>{c.step ? STEP_LABELS[c.step] ?? c.step : "—"}</td>
+        <td>
+          <code>{c.model ?? "—"}</code>
+          {c.reasoning && <span className="tag tag-ok">思考链</span>}
+        </td>
+        <td>{fmtCount(c.tokensIn)}</td>
+        <td>{fmtCount(c.tokensOut)}</td>
+        <td>{c.error ? c.error : fmtDuration(c.duration)}</td>
+      </tr>
+      {hasInspect && (
+        <tr className="llm-inspect-row">
+          <td colSpan={7}>
+            <div className="llm-inspect-box">
+              {c.reasoning && (
+                <details className="thinking-box">
+                  <summary className="small">查看模型深度思考过程（Reasoning / CoT，{fmtCount(c.reasoning.length)} 字）</summary>
+                  <pre className="code">{c.reasoning}</pre>
+                </details>
+              )}
+              {c.prompts && c.prompts.length > 0 && (
+                <details>
+                  <summary className="small">查看发送给模型的完整 Prompt（{c.prompts.length} 条消息）</summary>
+                  <div className="prompt-messages">
+                    {c.prompts.map((pm, idx) => (
+                      <div key={idx} className="prompt-msg">
+                        <div className="prompt-msg-head small">
+                          <span className="pill">{ROLE_LABELS[pm.role] ?? pm.role}</span>
+                          <span className="muted">{fmtCount(pm.chars ?? pm.content.length)} 字</span>
+                          {pm.truncated && <span className="muted">（已截断）</span>}
+                        </div>
+                        <pre className="code">{pm.content}</pre>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}

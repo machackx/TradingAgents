@@ -1,6 +1,6 @@
 import { fmtCount, fmtDuration } from "../format";
 import { NODE_STATUS_LABELS, PHASE_LABELS, STEP_LABELS, nodeLabel, ratingLabel } from "../labels";
-import { displayStatus, type NodeState, type RunState } from "../runState";
+import { displayStatus, nodeElapsed, type NodeState, type RunState } from "../runState";
 import { NodeStatusDot } from "./Badges";
 
 interface Props {
@@ -26,10 +26,15 @@ function outcome(n: NodeState): string | null {
     if (!md) return null;
     return md.status === "available" ? `${md.records?.length ?? 0} 根日线 · 截至 ${md.latest_bar_date ?? "?"}` : "行情不可用";
   }
-  if (n.id === "Memory Log") return u.memory_note ? "部分未能结算" : u.past_context ? "已载入历史经验" : "暂无历史经验";
+  if (n.id === "Memory Log") {
+    const settledCount = u.memory_settlement?.settled?.length ?? 0;
+    if (u.memory_note) return "部分未能结算";
+    if (settledCount > 0) return `本次结算 ${settledCount} 条 · 已载入历史经验`;
+    return u.past_context ? "已载入历史经验" : "暂无历史经验";
+  }
   if (n.id === "Evidence check") {
     const dq = u.data_quality;
-    return dq ? (dq.status === "adequate" ? "证据充足" : "证据不足，跳过辩论") : null;
+    return dq ? (dq.status === "adequate" ? "证据充足 → 进入辩论" : "证据不足 → 跳过辩论") : null;
   }
   if (DEBATERS.has(n.id)) return n.turns.length ? `发言 ${n.turns.length} 次` : null;
   const plan = n.structured.find((s) => s.schema === "research_plan")?.data;
@@ -38,13 +43,14 @@ function outcome(n: NodeState): string | null {
   if (n.id === "Trader") {
     const validation = u.trader_validation?.status;
     const action = proposal ? ratingLabel(String(proposal.action)) : null;
-    if (validation === "invalid") return "提议未通过校验";
-    return action ? `方向 ${action}` : null;
+    if (validation === "invalid") return "未通过校验 → 跳过风控";
+    return action ? `方向 ${action} · 校验通过` : null;
   }
   if (n.id === "Portfolio Manager") return u.final_rating ? `评级 ${ratingLabel(u.final_rating)}` : null;
   if (n.tools.length) {
     const usable = n.tools.filter((t) => t.result?.usable).length;
-    return `工具 ${n.tools.length} 次 · ${usable} 次可用`;
+    const wrapped = n.stepRuns.some((sr) => sr.step === "wrap_up");
+    return `工具 ${n.tools.length} 次 · ${usable} 次可用${wrapped ? " · 触发收尾" : ""}`;
   }
   const sentiment = n.structured.find((s) => s.schema === "sentiment_report")?.data;
   if (sentiment) return `情绪 ${sentiment.overall_band} · ${sentiment.overall_score}/10`;
@@ -56,6 +62,7 @@ function activity(n: NodeState): string {
     const tool = n.step === "tools" ? n.tools[n.tools.length - 1]?.name : null;
     return (STEP_LABELS[n.step] ?? n.step) + (tool ? ` · ${tool}` : "");
   }
+  if (n.liveThinking) return "正在深度思考…";
   return n.liveText ? "正在输出…" : "进行中";
 }
 
@@ -78,8 +85,7 @@ export function Pipeline({ run, now, selected, onSelect }: Props) {
               .map((id) => {
                 const n = run.nodes[id];
                 const status = displayStatus(run, n);
-                const elapsed =
-                  status === "running" && n.startedAt ? now - n.startedAt : (n.duration ?? undefined);
+                const elapsed = nodeElapsed(n, now);
                 const tokensOut = n.llm.reduce((sum, c) => sum + c.tokensOut, 0);
                 const detail = status === "running" ? activity(n) : status === "done" ? outcome(n) : NODE_STATUS_LABELS[status];
                 return (

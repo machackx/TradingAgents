@@ -92,6 +92,15 @@ def signed_in_as() -> str | None:
     return (data.get("account") or {}).get("email") if data.get("tokens") else None
 
 
+def account_info() -> dict:
+    """Public account metadata for the local UI; never return credentials."""
+    data = _read()
+    return {
+        "authenticated": bool(data.get("tokens")),
+        "email": (data.get("account") or {}).get("email") if data.get("tokens") else None,
+    }
+
+
 # --- tokens --------------------------------------------------------------------------
 
 def _b64url(raw: bytes) -> str:
@@ -296,7 +305,7 @@ def _listen(callback: _Callback, port: int) -> http.server.HTTPServer:
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             if ok:
-                self.wfile.write(b"Return to the terminal to finish signing in to TradingAgents.\n")
+                self.wfile.write(b"Authorization received. Return to TradingAgents to check your sign-in.\n")
 
         def log_message(self, *args):  # the URL carries the sign-in code
             pass
@@ -321,14 +330,15 @@ def _revoke(tokens: dict, client_id: str | None) -> bool:
     return response.status_code == 200
 
 
-def sign_in(say: Callable[[str], None] = print, read_line: Callable[[], str] = input,
+def sign_in(say: Callable[[str], None] = print, read_line: Callable[[], str] | None = input,
             timeout: float = 600, port: int = DEFAULT_PORT) -> str:
     """Sign in with ChatGPT and save the result; returns the account's email.
 
     The address to open is printed. The browser comes back to 127.0.0.1; when this
     machine is remote or in a container, paste the address the browser ends up on.
     The pasted line is read in a thread that can outlive this call, so sign in as the
-    last prompt of a process (``tradingagents login chatgpt``)."""
+    last prompt of a process (``tradingagents login chatgpt``). Pass ``read_line=None``
+    for the web worker, which receives the browser callback without reading stdin."""
     data = _read()
     host_id = _host_id(data)
     account = data.get("account") or {}
@@ -361,7 +371,8 @@ def sign_in(say: Callable[[str], None] = print, read_line: Callable[[], str] = i
             except (EOFError, OSError):
                 return
 
-        threading.Thread(target=read_pasted, daemon=True).start()
+        if read_line is not None:
+            threading.Thread(target=read_pasted, daemon=True).start()
         if not callback.received.wait(timeout):
             raise ChatGPTAuthError("Signing in with ChatGPT timed out; run `tradingagents login chatgpt` again.")
     finally:

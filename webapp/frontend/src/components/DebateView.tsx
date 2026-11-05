@@ -5,6 +5,8 @@ import { nodeLabel } from "../labels";
 import { debateTurns, structuredOf, type DebateTurn, type RunState } from "../runState";
 import { RatingBadge } from "./Badges";
 import { Markdown } from "./Markdown";
+import { StancePill } from "./ViewpointDashboard";
+import { extractResearcherTurnViewpoint } from "../viewpoint";
 
 const DEBATES = [
   {
@@ -56,22 +58,45 @@ function rounds(turns: DebateTurn[]): DebateTurn[][] {
 
 function Turn({ turn }: { turn: DebateTurn }) {
   const [open, setOpen] = useState(false);
-  const { stance, text } = parseTurn(turn.content);
+  const vp = turn.debate === "investment" ? extractResearcherTurnViewpoint(turn) : null;
+  const { stance, text: rawText } = parseTurn(turn.content);
+  const text = vp?.bodyMarkdown || rawText;
   const long = text.length > 700;
   return (
     <div className="turn-card">
       <div className="turn-head small">
-        {stance && <Stance stance={stance} />}
+        {vp?.stance ? <StancePill stance={vp.stance} /> : stance && <Stance stance={stance} />}
+        {vp?.conviction != null && <span className="pill">信心 {vp.conviction.toFixed(1)}/10</span>}
         <span className="muted">
           第 {turn.turn} 次发言 · {fmtClock(turn.ts)}
         </span>
       </div>
+      {vp && (vp.executiveSummary || vp.keyArguments.length > 0) && (
+        <div className="vp-turn-summary">
+          {vp.executiveSummary && (
+            <div className="vp-exec-box">
+              <div className="vp-box-label">核心观点简述 (Executive Summary)</div>
+              <p className="vp-exec-text">{vp.executiveSummary}</p>
+            </div>
+          )}
+          {vp.keyArguments.length > 0 && (
+            <div className="vp-takeaways">
+              <div className="vp-box-label">本轮论据要点</div>
+              <ul>
+                {vp.keyArguments.map((arg, i) => (
+                  <li key={i}>{arg}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       <div className={long && !open ? "clamped" : undefined}>
         <Markdown text={text} />
       </div>
       {long && (
         <button className="link" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "收起" : "展开全文"}
+          {open ? "收起详细辩论" : "展开详细辩论全文"}
         </button>
       )}
     </div>
@@ -167,6 +192,10 @@ function Verdict({ run, judge, kind, status }: { run: RunState; judge: string; k
     return status === "running" ? <p className="muted verdict">{nodeLabel(judge)}正在权衡…</p> : null;
   }
   const rating = data ? String(kind === "investment" ? data.recommendation : data.rating) : null;
+  const execSummary =
+    data && kind === "investment" && typeof data.executive_summary === "string" && data.executive_summary.trim()
+      ? data.executive_summary.trim()
+      : null;
   const reasoning = data ? String((kind === "investment" ? data.rationale : data.executive_summary) ?? "") : null;
   return (
     <div className="verdict">
@@ -174,6 +203,12 @@ function Verdict({ run, judge, kind, status }: { run: RunState; judge: string; k
         <strong>{nodeLabel(judge)}的结论</strong>
         {rating && <RatingBadge rating={kind === "risk" && run.rating ? run.rating : rating} />}
       </div>
+      {execSummary && (
+        <div className="vp-exec-box" style={{ marginTop: 8 }}>
+          <div className="vp-box-label">裁决核心简述 (Executive Summary)</div>
+          <p className="vp-exec-text">{execSummary}</p>
+        </div>
+      )}
       {reasoning ? <Markdown text={reasoning} /> : report && <Markdown text={report} />}
       {data && kind === "investment" && data.strategic_actions != null && (
         <details>

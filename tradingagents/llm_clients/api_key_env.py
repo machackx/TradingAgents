@@ -40,6 +40,14 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     # Google Antigravity CLI (`agy`) authenticates through its own CLI session.
     "antigravity": None,
     "agy":         None,
+    # Anthropic Claude Code CLI (`claude`) authenticates through its own CLI session.
+    "claude-cli":  None,
+    "claude_cli":  None,
+    "claude-code": None,
+    # OpenAI Codex CLI (`codex`) authenticates through its own CLI session.
+    "codex":       None,
+    "codex-cli":   None,
+    "codex_cli":   None,
     # Local runtimes do not authenticate.
     "ollama":     None,
     # Generic OpenAI-compatible endpoint: the client reads this when set (keyed

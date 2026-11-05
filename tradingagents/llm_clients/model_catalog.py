@@ -98,6 +98,7 @@ _ANTIGRAVITY_MODELS: dict[str, list[ModelOption]] = {
         ("Gemini 3.8 Flash - Fast, low latency", "gemini-3.8-flash"),
         ("Gemini 3.8 Flash (High) - Deep reasoning", "gemini-3.8-flash-high"),
         ("Gemini 3.7 Flash - General tasks", "gemini-3.7-flash"),
+        ("Claude Opus 4.6 (Thinking) - Complex reasoning", "claude-opus-4.6-think"),
         ("Custom model ID", "custom"),
     ],
     "deep": [
@@ -109,23 +110,63 @@ _ANTIGRAVITY_MODELS: dict[str, list[ModelOption]] = {
     ],
 }
 
+# Model IDs verified against https://learn.chatgpt.com/docs/models (2026-11-05).
+_OPENAI_MODELS: dict[str, list[ModelOption]] = {
+    "quick": [
+        ("GPT-6 Luna - Fast, high-volume and cost-efficient", "gpt-6-luna"),
+        ("GPT-6.1 Terra - Fast, efficient visual reasoning and writing", "gpt-6.1-terra"),
+        ("GPT-5.6 Luna - Previous-gen fast tier", "gpt-5.6-luna"),
+        ("GPT-5.6 Terra - Balances intelligence and cost", "gpt-5.6-terra"),
+        ("Custom model ID", "custom"),
+    ],
+    "deep": [
+        ("GPT-6.1 Sol - Near-Astra performance, balanced cost", "gpt-6.1-sol"),
+        ("GPT-6 Sol - Complex reasoning and analysis", "gpt-6-sol"),
+        ("GPT-6 Astra - Hardest multi-step reasoning", "gpt-6-astra"),
+        ("GPT-5.6 - Previous-gen reasoning (Sol)", "gpt-5.6"),
+        ("GPT-5.5 - Earlier frontier, 1M context", "gpt-5.5"),
+        ("Custom model ID", "custom"),
+    ],
+}
+
+_CLAUDE_CLI_MODELS: dict[str, list[ModelOption]] = {
+    "quick": [
+        ("Claude Sonnet 5 - Best speed and intelligence balance", "claude-sonnet-5"),
+        ("Claude Sonnet 4.6 - Fast agentic & coding", "claude-sonnet-4-6"),
+        ("Claude Haiku 4.5 - Fastest with near-frontier intelligence", "claude-haiku-4-5"),
+        ("Custom model ID", "custom"),
+    ],
+    "deep": [
+        ("Claude Opus 5.5 - Frontier agentic and enterprise work", "claude-opus-5-5"),
+        ("Claude Fable 5.1 - Most capable, demanding long-horizon reasoning", "claude-fable-5-1"),
+        ("Claude Opus 4.7 - Deep reasoning", "claude-opus-4-7"),
+        ("Claude Sonnet 5 - Near-frontier intelligence at Sonnet cost", "claude-sonnet-5"),
+        ("Custom model ID", "custom"),
+    ],
+}
+
+_CODEX_CLI_MODELS: dict[str, list[ModelOption]] = {
+    "quick": [
+        ("GPT-6 Luna - Fast, high-volume and cost-efficient", "gpt-6-luna"),
+        ("GPT-6.1 Terra - Fast, efficient visual reasoning and writing", "gpt-6.1-terra"),
+        ("Codex Mini Latest - Fast Codex model", "codex-mini-latest"),
+        ("GPT-5.6 Luna - Previous-gen fast tier", "gpt-5.6-luna"),
+        ("GPT-5.6 Terra - Balances intelligence and cost", "gpt-5.6-terra"),
+        ("Custom model ID", "custom"),
+    ],
+    "deep": [
+        ("GPT-6.1 Sol - Near-Astra performance, balanced cost", "gpt-6.1-sol"),
+        ("GPT-6 Sol - Complex reasoning and analysis", "gpt-6-sol"),
+        ("GPT-6 Astra - Hardest multi-step reasoning", "gpt-6-astra"),
+        ("GPT-5.6 - Previous-gen reasoning (Sol)", "gpt-5.6"),
+        ("GPT-5.5 - Earlier frontier, 1M context", "gpt-5.5"),
+        ("Custom model ID", "custom"),
+    ],
+}
+
 
 MODEL_OPTIONS: ProviderModeOptions = {
-    "openai": {
-        "quick": [
-            ("GPT-6 Luna - Fast, high-volume and cost-efficient", "gpt-6-luna"),
-            ("GPT-5.6 Luna - Previous-gen fast tier", "gpt-5.6-luna"),
-            ("GPT-5.6 Terra - Balances intelligence and cost", "gpt-5.6-terra"),
-            ("Custom model ID", "custom"),
-        ],
-        "deep": [
-            ("GPT-6 Sol - Complex reasoning and analysis", "gpt-6-sol"),
-            ("GPT-6 Astra - Hardest multi-step reasoning", "gpt-6-astra"),
-            ("GPT-5.6 - Previous-gen reasoning (Sol)", "gpt-5.6"),
-            ("GPT-5.5 - Earlier frontier, 1M context", "gpt-5.5"),
-            ("Custom model ID", "custom"),
-        ],
-    },
+    "openai": _OPENAI_MODELS,
     "anthropic": {
         "quick": [
             ("Claude Sonnet 5 - Best speed and intelligence balance", "claude-sonnet-5"),
@@ -238,12 +279,45 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "nvidia": _CUSTOM_ONLY,
     # Bedrock model IDs / cross-region inference profile IDs are user-specified.
     "bedrock": _CUSTOM_ONLY,
-    # The plan's models are listed live from OpenAI once signed in.
-    "chatgpt": _CUSTOM_ONLY,
+    # The plan's models are listed live from OpenAI in the CLI; fallback catalog for Web UI dropdowns.
+    "chatgpt": _OPENAI_MODELS,
     # Google Antigravity CLI (`agy`) models.
     "antigravity": _ANTIGRAVITY_MODELS,
     "agy": _ANTIGRAVITY_MODELS,
+    # Anthropic Claude Code CLI (`claude`) models.
+    "claude-cli": _CLAUDE_CLI_MODELS,
+    "claude_cli": _CLAUDE_CLI_MODELS,
+    "claude-code": _CLAUDE_CLI_MODELS,
+    # OpenAI Codex CLI (`codex`) models.
+    "codex": _CODEX_CLI_MODELS,
+    "codex-cli": _CODEX_CLI_MODELS,
+    "codex_cli": _CODEX_CLI_MODELS,
 }
+
+
+# Canonical list of providers surfaced in dropdown menus (e.g. Web UI),
+# putting local subscription / CLI providers first.
+PROVIDER_CATALOG: tuple[tuple[str, str], ...] = (
+    ("chatgpt", "ChatGPT 订阅 (OAuth)"),
+    ("antigravity", "Antigravity CLI (agy)"),
+    ("claude-cli", "Claude CLI (claude 订阅)"),
+    ("codex", "Codex CLI (codex 订阅)"),
+    ("openai", "OpenAI API"),
+    ("anthropic", "Anthropic API"),
+    ("google", "Google Gemini API"),
+    ("deepseek", "DeepSeek API"),
+    ("qwen", "Qwen (DashScope Global)"),
+    ("qwen-cn", "Qwen (DashScope 中国)"),
+    ("glm", "GLM (Z.AI Global)"),
+    ("glm-cn", "GLM (BigModel 中国)"),
+    ("minimax", "MiniMax Global"),
+    ("minimax-cn", "MiniMax 中国"),
+    ("kimi", "Kimi (Moonshot)"),
+    ("xai", "xAI (Grok)"),
+    ("mistral", "Mistral"),
+    ("openrouter", "OpenRouter"),
+    ("ollama", "Ollama (Local)"),
+)
 
 
 def get_model_options(provider: str, mode: str) -> list[ModelOption]:

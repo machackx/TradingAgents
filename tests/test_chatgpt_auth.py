@@ -272,7 +272,8 @@ def _status(url):
 
 
 @pytest.mark.unit
-def test_the_browser_answer_reaches_the_loopback_and_strays_are_ignored(home, openai, monkeypatch):
+@pytest.mark.parametrize("web", [False, True])
+def test_the_browser_answer_reaches_the_loopback_and_strays_are_ignored(home, openai, monkeypatch, web):
     refused_connect, refused_lookup = socket.socket.connect, socket.getaddrinfo
     monkeypatch.setattr(socket.socket, "connect", lambda sock, address: (
         _CONNECT if address[0] == "127.0.0.1" else refused_connect)(sock, address))
@@ -291,7 +292,8 @@ def test_the_browser_answer_reaches_the_loopback_and_strays_are_ignored(home, op
 
     results = []
     threading.Thread(target=browser, daemon=True).start()
-    email = auth.sign_in(say=printed.append, read_line=threading.Event().wait, timeout=10, port=0)
+    email = auth.sign_in(say=printed.append, read_line=None if web else threading.Event().wait,
+                         timeout=10, port=0)
     assert email == "a@example.com" and results == [400, 200]
 
 
