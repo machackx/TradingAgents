@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { fmtClock } from "../format";
+import { skipReason } from "../checks";
 import { nodeLabel } from "../labels";
 import { debateTurns, structuredOf, type DebateTurn, type RunState } from "../runState";
 import { RatingBadge } from "./Badges";
@@ -116,7 +117,7 @@ export function DebateView({ run }: { run: RunState }) {
           return (
             <section key={d.key} className="panel">
               <h2>{d.title}</h2>
-              <p className="muted">这次没有进行{d.title}。证据检查判定资料不足时，流程会跳过辩论。</p>
+              <p className="muted">这次没有进行{d.title}。{skipReason(run, d.speakers[0])}</p>
             </section>
           );
         }

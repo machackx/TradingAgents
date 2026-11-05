@@ -1,6 +1,7 @@
 """The memory log: an append-only markdown record of each decision and, once settled, its outcome."""
 
 import contextlib
+import json
 import re
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class TradingMemoryLog:
         trade_date: str,
         final_trade_decision: str,
         rating: str | None = None,
+        evaluation_policy: dict | None = None,
     ) -> None:
         """Append pending entry at end of propagate(). No LLM call.
 
@@ -46,7 +48,9 @@ class TradingMemoryLog:
         with locked(self._log_path):
             rating = rating or parse_rating(final_trade_decision)
             tag = f"[{trade_date} | {ticker} | {rating} | pending]"
-            entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
+            policy = ("\n\nEVALUATION: " + json.dumps(evaluation_policy, ensure_ascii=True, allow_nan=False)
+                      if evaluation_policy is not None else "")
+            entry = f"{tag}{policy}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
             # A real call for this ticker/date blocks another, pending or settled:
             # reruns must not count the same decision twice. An unscored REVIEW
             # may be replaced when the missing evidence is subsequently supplied.
@@ -341,6 +345,13 @@ class TradingMemoryLog:
             "resolved": resolved,
         }
         body = "\n".join(lines[1:]).strip()
+        # Program-owned header, outside model-written DECISION text. Legacy
+        # entries have no policy and continue using the caller's settlement config.
+        if body.startswith("EVALUATION: "):
+            try:
+                entry["evaluation_policy"] = json.loads(body.splitlines()[0].removeprefix("EVALUATION: "))
+            except ValueError:
+                entry["evaluation_policy"] = {}  # invalid metadata must not silently change the benchmark
         decision_match = self._DECISION_RE.search(body)
         reflection_match = self._REFLECTION_RE.search(body)
         entry["decision"] = decision_match.group(1).strip() if decision_match else ""
@@ -353,6 +364,9 @@ class TradingMemoryLog:
         holding = e["holding"] or "n/a"
         tag = f"[{e['date']} | {e['ticker']} | {e['rating']} | {raw} | {alpha} | {holding}]"
         parts = [tag, f"DECISION:\n{e['decision']}"]
+        policy = e.get("evaluation_policy")
+        if policy:
+            parts.insert(1, f"Evaluation: {policy.get('benchmark')}, {policy.get('holding_period_days')} trading sessions after entry")
         if e["reflection"]:
             parts.append(f"REFLECTION:\n{e['reflection']}")
         return "\n\n".join(parts)

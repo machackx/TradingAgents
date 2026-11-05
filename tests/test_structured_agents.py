@@ -496,14 +496,12 @@ class TestSentimentAnalystAgent:
     pytest.param(lambda: inspect.getsource(create_research_manager), id="research_manager prompt"),
     pytest.param(lambda: inspect.getsource(create_portfolio_manager), id="portfolio_manager prompt"),
 ])
-def test_conflict_alone_is_not_a_hold_trigger(source):
-    # The debate always contains conflicting arguments, so a Hold condition that
-    # conflict satisfies fires on every run and swallows directional calls
-    # (#1321). All four decision sites must state the same rule.
+def test_decision_sites_use_the_shared_evaluation_contract(source):
+    # Direction must follow evidence under one contract. Neither a forced winner
+    # nor the presence of disagreement alone defines a rating.
     text = " ".join(source().split())
-    assert "conflict alone is not a reason to Hold" in text or \
-        "Conflicting arguments alone are not a reason to Hold" in text
-    assert "materially conflicting" not in text
+    assert "evaluation contract" in text or "policy_instruction" in text
+    assert "commit to the stronger" not in text.lower()
 
 
 @pytest.mark.unit

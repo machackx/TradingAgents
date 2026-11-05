@@ -28,6 +28,21 @@ def test_no_env_uses_built_in_defaults(monkeypatch):
     assert config["checkpoint_enabled"] is False
 
 
+def test_rating_policy_overrides(monkeypatch):
+    config = _config_with_env(
+        monkeypatch, TRADINGAGENTS_HOLDING_PERIOD_DAYS="21",
+        TRADINGAGENTS_RATING_NEUTRAL_ALPHA_PCT="1.5", TRADINGAGENTS_RATING_STRONG_ALPHA_PCT="4.0",
+        TRADINGAGENTS_RATING_STANDARD_ALLOCATION_PCT="6", TRADINGAGENTS_RATING_INDEPENDENT_REVIEW="false",
+        TRADINGAGENTS_RESEARCH_DEBATE_ORDER="bear_first",
+    )
+    from tradingagents.agents.rating_policy import rating_policy
+
+    p = rating_policy("AAPL", config)
+    assert p["holding_period_days"] == 21 and p["standard_allocation_pct"] == 6
+    assert p["neutral_alpha_pct"] == 1.5 and p["strong_alpha_pct"] == 4
+    assert config["rating_independent_review"] is False and config["research_debate_order"] == "bear_first"
+
+
 def test_string_overrides(monkeypatch):
     config = _config_with_env(
         monkeypatch,

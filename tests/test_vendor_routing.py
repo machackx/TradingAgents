@@ -122,3 +122,58 @@ class VendorRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["get_balance_sheet", "get_income_statement", "get_cashflow"])
+def test_stale_sec_quarters_gain_a_separate_configured_live_supplement(method, monkeypatch):
+    _reset_config()
+    set_config({"data_vendors": {"fundamental_data": "sec_edgar,yfinance"}})
+    monkeypatch.setattr(router, "get_current_date", lambda: "2026-11-05")
+    sec = "# Latest tagged period: 2022-09-30\nSEC historical rows"
+    yahoo = "# Latest tagged period: 2026-06-30\nYahoo recent rows"
+    live = mock.Mock(return_value=yahoo)
+    monkeypatch.setitem(router.VENDOR_METHODS, method, {"sec_edgar": mock.Mock(return_value=sec), "yfinance": live})
+    result = router.route_to_vendor(method, "FUTU", "quarterly", "2026-11-05")
+    assert result.startswith(sec) and yahoo in result
+    assert "share basis separate" in result and "filing vintage" in result
+    live.assert_called_once_with("FUTU", "quarterly", "2026-11-05")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("freq,as_of,latest,vendors", [
+    ("quarterly", "2026-11-04", "2022-09-30", "sec_edgar,yfinance"),
+    ("quarterly", "2026-11-05", "2022-09-30", "sec_edgar"),
+    ("quarterly", "2026-11-05", "2026-06-30", "sec_edgar,yfinance"),
+    ("annual", "2026-11-05", "2022-12-31", "sec_edgar,yfinance"),
+])
+def test_sec_supplement_respects_vintage_vendor_selection_and_frequency(freq, as_of, latest, vendors, monkeypatch):
+    _reset_config()
+    set_config({"data_vendors": {"fundamental_data": vendors}})
+    monkeypatch.setattr(router, "get_current_date", lambda: "2026-11-05")
+    sec = f"# Latest tagged period: {latest}\nSEC rows"
+    live = mock.Mock(side_effect=AssertionError("live data must not be requested"))
+    monkeypatch.setitem(router.VENDOR_METHODS, "get_income_statement", {"sec_edgar": mock.Mock(return_value=sec), "yfinance": live})
+    assert router.route_to_vendor("get_income_statement", "FUTU", freq, as_of) == sec
+    live.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("supplement", [
+    "DATA_UNAVAILABLE: no connection",
+    "# Latest tagged period: 2021-09-30\nOlder rows",
+    "# Latest tagged period: 2026-12-31\nFuture rows",
+    RuntimeError("Yahoo unreachable"),
+])
+def test_failed_or_older_supplements_keep_usable_sec_history(supplement, monkeypatch):
+    from tradingagents.agents.evidence import usable_result
+
+    _reset_config()
+    set_config({"data_vendors": {"fundamental_data": "sec_edgar,yfinance"}})
+    monkeypatch.setattr(router, "get_current_date", lambda: "2026-11-05")
+    sec = "# Latest tagged period: 2022-09-30\nSEC historical rows"
+    live = mock.Mock(side_effect=supplement) if isinstance(supplement, Exception) else mock.Mock(return_value=supplement)
+    monkeypatch.setitem(router.VENDOR_METHODS, "get_cashflow", {"sec_edgar": mock.Mock(return_value=sec), "yfinance": live})
+    result = router.route_to_vendor("get_cashflow", ticker="FUTU", freq="quarterly", as_of_date="2026-11-05")
+    assert result.startswith(sec) and "SEC history retained" in result and usable_result(result)
+    assert "Future rows" not in result and "Older rows" not in result

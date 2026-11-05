@@ -101,7 +101,38 @@ class TraderAction(StrEnum):
 # ---------------------------------------------------------------------------
 
 
-class ResearchPlan(BaseModel):
+class ResearchAssessment(BaseModel):
+    """Direction, confidence and evidence quality are independent fields."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None, description="Confidence in the research view, independent of bullish/bearish direction.",
+    )
+    expected_alpha_pct: float | None = Field(
+        default=None, description=(
+            "Supported expected instrument return minus benchmark return, in percentage points, "
+            "over the evaluation contract's horizon. Null when not defensibly estimable; never invent a forecast."
+        ),
+    )
+    evidence_status: Literal["usable", "limited", "insufficient"] = Field(
+        default="usable", description=(
+            "usable: coherent evidence; limited: partial coverage still permits a view; "
+            "insufficient: material unresolved currency, per-share, period or cash-flow conflicts "
+            "prevent assessment. Missing information is not itself bearish evidence."
+        ),
+    )
+
+
+def render_assessment(decision: ResearchAssessment) -> str:
+    confidence = decision.confidence or "not provided"
+    alpha = decision.expected_alpha_pct
+    return (f"\n\n**Confidence**: {confidence}"
+            f"\n\n**Expected Alpha Pct**: {alpha if alpha is not None else 'not provided'}"
+            f"\n\n**Evidence Status**: {decision.evidence_status}")
+
+
+class ResearchPlan(ResearchAssessment):
     """Structured investment plan produced by the Research Manager.
 
     Hand-off to the Trader: the recommendation pins the directional view,
@@ -113,17 +144,14 @@ class ResearchPlan(BaseModel):
     recommendation: PortfolioRating = Field(
         description=(
             "The investment recommendation. Exactly one of Buy / Overweight / "
-            "Hold / Underweight / Sell. Conflicting arguments alone are not a "
-            "reason to Hold: commit to the stronger side, sized by how "
-            "decisively it wins. Choose Hold only when the evidence is still "
-            "balanced after weighing, or too thin to support a call."
+            "Hold / Underweight / Sell under the supplied evaluation contract. "
+            "Separate direction from confidence; unknown data is not negative alpha."
         ),
     )
     executive_summary: str = Field(
         default="",
         description=(
-            "Concise 1–2 sentence executive summary distilling why the winning "
-            "side carried the debate and the core directional takeaway."
+            "Concise 1–2 sentence summary of the evidence, relative-return view and uncertainty."
         ),
     )
     bull_key_points: list[str] = Field(
@@ -148,7 +176,7 @@ class ResearchPlan(BaseModel):
     strategic_actions: str = Field(
         description=(
             "Concrete steps for the trader to implement the recommendation, "
-            "including sizing guidance relative to a standard allocation. The "
+            "using a standard allocation only when the caller supplied one. The "
             "research team does not see the caller's holdings; the trader and "
             "portfolio manager apply the actual position."
         ),
@@ -174,7 +202,7 @@ def render_research_plan(plan: ResearchPlan) -> str:
         "",
         f"**Strategic Actions**: {plan.strategic_actions}",
     ])
-    return "\n".join(parts)
+    return "\n".join(parts) + render_assessment(plan)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +318,7 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
 # ---------------------------------------------------------------------------
 
 
-class PortfolioDecision(BaseModel):
+class PortfolioDecision(ResearchAssessment):
     """Structured output produced by the Portfolio Manager.
 
     The model fills every field as part of its primary LLM call; no separate
@@ -304,11 +332,8 @@ class PortfolioDecision(BaseModel):
     rating: PortfolioRating = Field(
         description=(
             "The final position rating. Exactly one of Buy / Overweight / Hold / "
-            "Underweight / Sell, picked based on the analysts' debate. "
-            "Conflicting arguments alone are not a reason to Hold: commit to the "
-            "stronger side, sized by how decisively it wins. Choose Hold only "
-            "when the evidence is still balanced after weighing, or too thin to "
-            "support a call."
+            "Underweight / Sell under the supplied evaluation contract. "
+            "Evaluate evidence independently from earlier recommendations and account orders."
         ),
     )
     executive_summary: str = Field(
@@ -331,7 +356,7 @@ class PortfolioDecision(BaseModel):
     )
     time_horizon: str | None = Field(
         default=None,
-        description="Optional recommended holding period, e.g. '3-6 months'.",
+        description="Evaluation horizon from the supplied contract; label any longer-term thesis separately.",
     )
 
     @field_validator("price_target", mode="before")
@@ -360,7 +385,7 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
     parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
-    return "\n".join(parts)
+    return "\n".join(parts) + render_assessment(decision)
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,10 @@ class TradingAgentsGraph:
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
 
+        from tradingagents.agents.rating_policy import rating_policy
+
+        rating_policy("SPY", self.config)  # reject invalid thresholds/horizons before any model work
+
         set_config(self.config)
 
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
@@ -183,6 +187,7 @@ class TradingAgentsGraph:
             "memory=parallel",
             "evidence=required-v1",
             "market=pinned-v1",
+            "rating=relative-alpha-v1",
             f"settings={digest}",
         ])
 
@@ -291,6 +296,14 @@ class TradingAgentsGraph:
             "analysts": list(self.selected_analysts),
             "max_debate_rounds": cfg.get("max_debate_rounds"),
             "max_risk_discuss_rounds": cfg.get("max_risk_discuss_rounds"),
+            "holding_period_days": cfg.get("holding_period_days", 5),
+            "benchmark_ticker": cfg.get("benchmark_ticker"),
+            "benchmark_map": dict(cfg.get("benchmark_map") or {}),
+            "rating_neutral_alpha_pct": cfg.get("rating_neutral_alpha_pct", 2.0),
+            "rating_strong_alpha_pct": cfg.get("rating_strong_alpha_pct", 5.0),
+            "rating_standard_allocation_pct": cfg.get("rating_standard_allocation_pct"),
+            "rating_independent_review": cfg.get("rating_independent_review", True),
+            "research_debate_order": cfg.get("research_debate_order", "bull_first"),
             "output_language": cfg.get("output_language"),
             "data_vendors": dict(cfg.get("data_vendors") or {}),
             "tool_vendors": dict(cfg.get("tool_vendors") or {}),
@@ -328,7 +341,9 @@ class TradingAgentsGraph:
         and loads them alongside the analysts (see ``_memory_step``).
         """
         trade_date = _validate_trade_date(trade_date)
-        return self.propagator.create_initial_state(
+        from tradingagents.agents.rating_policy import rating_policy
+
+        state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
@@ -336,6 +351,8 @@ class TradingAgentsGraph:
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
             portfolio_data=portfolio.model_dump(mode="json") if portfolio is not None else {},
         )
+        state["rating_policy"] = rating_policy(company_name, self.config)
+        return state
 
     def _memory_step(self, state):
         """The graph's Memory Log step, alongside the analysts (#1428): settle every
@@ -409,6 +426,7 @@ class TradingAgentsGraph:
         self.memory_log.store_decision(
             ticker=company_name, trade_date=trade_date, final_trade_decision=decision,
             rating=run_rating(final_state),
+            evaluation_policy=final_state.get("rating_policy"),
         )
 
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock",
@@ -479,6 +497,10 @@ class TradingAgentsGraph:
     def _log_state(self, trade_date, final_state):
         """Write a run's final state to JSON under the run's own ticker."""
         entry = {
+            **{key: final_state.get(key) for key in (
+                "rating_policy", "research_validation", "independent_research_plan",
+                "independent_portfolio_decision", "portfolio_validation",
+            )},
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
             "market_report": final_state["market_report"],

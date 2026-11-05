@@ -38,6 +38,12 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_TOOL_ROUNDS":      "max_tool_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
+    "TRADINGAGENTS_HOLDING_PERIOD_DAYS": "holding_period_days",
+    "TRADINGAGENTS_RATING_NEUTRAL_ALPHA_PCT": "rating_neutral_alpha_pct",
+    "TRADINGAGENTS_RATING_STRONG_ALPHA_PCT": "rating_strong_alpha_pct",
+    "TRADINGAGENTS_RATING_STANDARD_ALLOCATION_PCT": "rating_standard_allocation_pct",
+    "TRADINGAGENTS_RATING_INDEPENDENT_REVIEW": "rating_independent_review",
+    "TRADINGAGENTS_RESEARCH_DEBATE_ORDER": "research_debate_order",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
@@ -216,6 +222,8 @@ def build_default_config() -> dict:
         "output_language": "English",
         # Debate and discussion settings
         "max_debate_rounds": 1,
+        "research_debate_order": "bull_first",
+        "rating_independent_review": True,
         "max_risk_discuss_rounds": 1,
         "max_recur_limit": 100,
         # Rounds of tool calls an analyst may make before it is asked for its report.
@@ -276,6 +284,10 @@ def build_default_config() -> dict:
         # Trading days from the first close after the analysis date over which a
         # decision's outcome is measured, for reflection and for the backtest figures.
         "holding_period_days": 5,
+        # Engineering defaults in percentage points, not backtest-calibrated forecasts.
+        "rating_neutral_alpha_pct": 2.0,
+        "rating_strong_alpha_pct": 5.0,
+        "rating_standard_allocation_pct": None,
         "benchmark_ticker": None,
         "benchmark_map": {
             ".NS":  "^NSEI",       # NSE India (Nifty 50)

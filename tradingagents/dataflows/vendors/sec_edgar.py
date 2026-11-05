@@ -51,11 +51,12 @@ _STATEMENTS: dict[str, list[tuple[str, tuple[str, ...]]]] = {
         ("Cash and Equivalents", ("CashAndCashEquivalentsAtCarryingValue",)),
         ("Total Liabilities", ("Liabilities",)),
         ("Current Liabilities", ("LiabilitiesCurrent",)),
-        ("Stockholders Equity", ("StockholdersEquity",
-                                 "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")),
+        ("Stockholders Equity", ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",)),
+        ("Equity Attributable to Parent", ("StockholdersEquity",)),
+        ("Noncontrolling Interest", ("MinorityInterest",)),
     ],
     "income_statement": [
-        ("Revenue", ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues",
+        ("Revenue", ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
                      "SalesRevenueNet")),
         ("Cost of Revenue", ("CostOfRevenue", "CostOfGoodsAndServicesSold")),
         ("Gross Profit", ("GrossProfit",)),
@@ -153,7 +154,21 @@ def _span_index(fact: dict, spans: tuple[tuple[int, int], ...]) -> int | None:
 
 def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tuple[int, int], ...],
            forms: tuple[str, ...] = ()) -> tuple[dict, str]:
-    """({(period end, span index): value}, unit) for the tags the filer reports, as known then.
+    """One consistently denominated series, preferring the unit with most coverage.
+
+    Statements use all unit series below; this single-series helper remains useful
+    to callers that cannot display multiple currencies. It never merges currencies.
+    """
+    series = _as_of_units(facts, tags, as_of_date, spans, forms)
+    if not series:
+        return {}, "USD"
+    unit = max(series, key=lambda key: (len(series[key]), key))
+    return series[unit], unit
+
+
+def _as_of_units(facts: dict, tags: tuple[str, ...], as_of_date: str,
+                 spans: tuple[tuple[int, int], ...], forms: tuple[str, ...] = ()) -> dict:
+    """Unit -> {(period end, span index): value}, without cross-currency merging.
 
     A period reported more than once takes its latest filing on or before the
     date, so an amendment counts from the day it was filed and not before. The
@@ -162,13 +177,20 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
     duration fact (revenue, cash flow) must cover one of ``spans``; an instant
     fact (a balance) has no span and serves any.
     """
-    values: dict[tuple[str, int], float] = {}
-    chosen_unit = "USD"
+    series: dict[str, dict] = {}
     # Tags are tried in order and a period keeps the first one that reports it:
     # filers renamed lines over the years, so one tag covers only part of the
     # history. Values are never added across tags, which would double count.
     for tag in tags:
+        grouped_units: dict[str, list] = {}
         for unit, unit_values in ((facts.get(tag) or {}).get("units", {})).items():
+            # Some older EPS filings use a currency-only unit. The tagged concept
+            # is still per share; never scale it as a monetary statement total.
+            if tag == "EarningsPerShareDiluted" and "/" not in unit:
+                unit = f"{unit}/shares"
+            grouped_units.setdefault(unit, []).extend(unit_values)
+        for unit, unit_values in grouped_units.items():
+            values = series.setdefault(unit, {})
             latest: dict[tuple[str, int], dict] = {}
             covered: set[tuple[str, int]] = set()   # periods a filing of ``forms`` reports
             for fact in unit_values:
@@ -182,10 +204,8 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
                 if seen is None or fact["filed"] >= seen["filed"]:
                     latest[key] = fact
             latest = {key: fact for key, fact in latest.items() if key in covered}
-            if latest:
-                chosen_unit = unit
-                values.update({key: fact["val"] for key, fact in latest.items()})
-    return dict(sorted(values.items())), chosen_unit
+            values.update({key: fact["val"] for key, fact in latest.items()})
+    return {unit: dict(sorted(values.items())) for unit, values in sorted(series.items()) if values}
 
 
 def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> str:
@@ -206,37 +226,62 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
     else:
         spans, names = (_SPANS["annual"],), [""]
     forms = () if quarterly else _ANNUAL_FORMS
-    lines = {label: _as_of(us_gaap, tags, as_of_date, spans, forms) for label, tags in _STATEMENTS[kind]}
+    series = {label: _as_of_units(us_gaap, tags, as_of_date, spans, forms)
+              for label, tags in _STATEMENTS[kind]}
+    lines = {(label, unit): values for label, units in series.items() for unit, values in units.items()}
     # Each row takes the shortest span it reports for a period, and a column
     # holds one span of one period, so a row filed only to date keeps its figure
     # beside a row filed by quarter.
     chosen = {label: {} for label in lines}
-    for label, (values, _) in lines.items():
+    for label, values in lines.items():
         for end, index in values:
             chosen[label][end] = min(index, chosen[label].get(end, index))
     periods = sorted({(end, index) for spans_of in chosen.values() for end, index in spans_of.items()})
     if not periods:
         raise NoMarketDataError(ticker, ticker, f"no {freq} {title.lower()} filed by {as_of_date}")
-    tagged = {label: line for label, line in lines.items() if line[0]}
-    untagged = [label for label in lines if label not in tagged]
+    untagged = [label for label, units in series.items() if not units]
+    latest_period = max(end for end, _ in periods)
     header = (
-        f"# {title} for {ticker.upper()} ({freq}), USD in millions unless the column says otherwise\n"
+        f"# {title} for {ticker.upper()} ({freq})\n"
         f"# SEC EDGAR facts filed on or before {as_of_date}, at the values filed then\n"
+        f"# Latest tagged period: {latest_period}\n"
+        "# Units: USD monetary totals are in millions; other currencies are in raw units. "
+        "Per-share figures are unscaled. Each currency has its own column; no currency conversion is applied.\n"
+        "# Coverage is limited to standardized companyfacts tags, not all issuer disclosures. "
+        "Missing recent periods do not mean the issuer has not published results.\n"
         + (f"# Not tagged by this filer: {', '.join(untagged)}\n" if untagged else "")
-        + "\n"
     )
+    if kind == "income_statement":
+        header += (
+            "# Revenue prefers the aggregate Revenues tag. Where absent, contract-customer or sales "
+            "revenue is used and may exclude interest or other revenue; do not assume identical scope.\n"
+            "# EPS retains the filing's share basis. No ordinary-share/ADS conversion ratio is inferred; "
+            "do not compare statement EPS with quote EPS without matching currency, period and share basis.\n"
+        )
+    elif kind == "balance_sheet":
+        header += (
+            "# Stockholders Equity includes noncontrolling interests; Equity Attributable to Parent "
+            "excludes them. Reconcile Assets minus Liabilities against total Stockholders Equity.\n"
+        )
+    else:
+        header += (
+            "# Capital Expenditure is a payments amount: positive means cash spent. Operating Cash Flow "
+            "is as filed and may include customer-fund movements for financial companies; it is not "
+            "normalized cash available to shareholders.\n"
+        )
     # One row per period, so every figure sits beside its own date: across a
     # filer's whole history a row per line item ran to dozens of columns and was
     # read a column off (#1517).
     rows = [",".join(["Period"] + [label if unit == "USD" else f"{label} ({unit})"
-                                   for label, (_, unit) in tagged.items()])]
+                                   for label, unit in lines])]
     for end, index in periods:
         cells = []
-        for label, (values, unit) in tagged.items():
+        for label, values in lines.items():
+            _, unit = label
             value = values.get((end, index)) if chosen[label].get(end) == index else None
             cells.append("" if value is None else _millions(value) if unit == "USD" else f"{value:.2f}")
         rows.append(",".join([end + names[index]] + cells))
-    return header + "\n".join(rows) + "\n"
+    return header + "\n" + "\n".join(rows) + "\n"
 
 
 def _millions(value: float) -> str:
@@ -246,7 +291,7 @@ def _millions(value: float) -> str:
     """
     millions = value / 1e6
     if millions == 0 or abs(millions) >= 1:
-        return f"{millions:.0f}"
+        return f"{millions:.6f}".rstrip("0").rstrip(".")
     return f"{millions:.{2 - math.floor(math.log10(abs(millions)))}f}"
 
 

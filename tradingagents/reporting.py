@@ -58,6 +58,12 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
                          f"Futu community {bool(s('futu_community_enabled'))}")
     if final_state.get("memory_note"):
         lines.append(f"- Memory log: {final_state['memory_note']}")
+    policy = final_state.get("rating_policy") or {}
+    if policy:
+        lines.append(f"- Rating policy: {policy['version']}; benchmark {policy['benchmark']}; "
+                     f"horizon {policy['holding_period_days']} trading sessions after entry")
+        lines.append(f"- Alpha thresholds (percentage points): neutral ±{policy['neutral_alpha_pct']:g}; "
+                     f"strong ±{policy['strong_alpha_pct']:g}; configurable, not empirically calibrated")
     quality = final_state.get("data_quality") or {}
     if quality:
         lines.append(f"- Evidence check: {quality.get('status', 'not checked')}")
@@ -81,6 +87,7 @@ _SECTIONS = (
         ("Fundamentals Analyst", "fundamentals.md", ("fundamentals_report",)),
     )),
     ("II. Research Team Decision", "2_research", (
+        ("Independent Research Assessment", "independent.md", ("independent_research_plan",)),
         ("Bull Researcher", "bull.md", ("investment_debate_state", "bull_history")),
         ("Bear Researcher", "bear.md", ("investment_debate_state", "bear_history")),
         ("Research Manager", "manager.md", ("investment_plan",)),
@@ -94,6 +101,7 @@ _SECTIONS = (
         ("Neutral Analyst", "neutral.md", ("risk_debate_state", "neutral_history")),
     )),
     ("V. Portfolio Manager Decision", "5_portfolio", (
+        ("Independent Portfolio Assessment", "independent.md", ("independent_portfolio_decision",)),
         ("Portfolio Manager", "decision.md", ("final_trade_decision",)),
     )),
 )
@@ -133,7 +141,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
         snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     else:
         snapshot_path.unlink(missing_ok=True)
-    checks = {key: final_state[key] for key in ("data_quality", "trader_validation", "analyst_evidence") if key in final_state}
+    checks = {key: final_state[key] for key in (
+        "data_quality", "research_validation", "portfolio_validation", "trader_validation", "analyst_evidence", "rating_policy",
+    ) if key in final_state}
     checks_path = save_path / "analysis_checks.json"
     if checks:
         checks_path.write_text(json.dumps(checks, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")

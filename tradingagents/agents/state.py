@@ -53,6 +53,11 @@ class AgentState(MessagesState):
     analyst_evidence: Annotated[dict, merge_evidence]
     data_quality: Annotated[dict, "Deterministic evidence coverage for the selected analysts"]
     trader_validation: Annotated[dict, "Programmatic validation of the transaction proposal"]
+    research_validation: Annotated[dict, "Research assessment validity under the evaluation contract"]
+    portfolio_validation: Annotated[dict, "Final assessment validity and rejected output for inspection"]
+    rating_policy: Annotated[dict, "Resolved benchmark, horizon and rating thresholds"]
+    independent_research_plan: Annotated[str, "Research manager assessment before reading debate"]
+    independent_portfolio_decision: Annotated[str, "Portfolio manager assessment before prior recommendations"]
     portfolio_data: Annotated[dict, "Structured holdings and cash used for numeric validation"]
 
     # research step

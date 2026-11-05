@@ -10,6 +10,7 @@ from tradingagents.agents.context import (
     get_portfolio_context_from_state,
 )
 from tradingagents.agents.proposal_validation import check_trader_text
+from tradingagents.agents.rating_policy import policy_instruction
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
@@ -74,14 +75,18 @@ def create_trader(llm):
                     f"{instrument_context}\n\n"
                     f"{report_section}"
                     f"{portfolio_context}\n\n"
+                    f"{policy_instruction(state)}\n\n"
                     f"Proposed Investment Plan:\n{investment_plan}\n\n"
                     "Make an informed, strategic trading decision.\n\n"
                     "## Output\n\n"
                     "Write these sections, in this order, starting with the action "
                     "on its own line:\n\n"
                     "- **Action**: exactly one of Buy / Hold / Sell. A research "
-                    "recommendation of Overweight is a Buy and Underweight is a Sell, "
-                    "sized by how strong the case is; conflict alone is not a Hold.\n"
+                    "view is separate from an account action. Overweight/Buy may justify "
+                    "adding and Underweight/Sell may justify reducing existing longs only "
+                    "when actual holdings and a supported target justify that change. "
+                    "With unknown holdings give conditional guidance; do not invent "
+                    "overconcentration, a standard weight or a mandatory transaction.\n"
                     "- **Reasoning**: why, against the plan and the price structure\n"
                     "- **Entry Price**, **Stop Loss**, **Position Sizing**: when you can state them"
                     "\n- **Position Size Pct**: optional numeric total target percentage of portfolio NAV"

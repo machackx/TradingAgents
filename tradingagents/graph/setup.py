@@ -23,6 +23,7 @@ from tradingagents.agents import (
 from tradingagents.agents.analysts.turn import WRAP_UP
 from tradingagents.agents.evidence import assess_evidence, tool_evidence
 from tradingagents.agents.state import AgentState
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.router import get_vendor
 from tradingagents.dataflows.vendors.yahoo.snapshot import prepare_market_snapshot
 
@@ -137,6 +138,10 @@ class GraphSetup:
                 ``past_context``. It runs alongside the analysts.
         """
         plan = build_analyst_execution_plan(selected_analysts)
+        debate_order = get_config().get("research_debate_order", "bull_first")
+        if debate_order not in {"bull_first", "bear_first"}:
+            raise ValueError("research_debate_order must be bull_first or bear_first")
+        debate_start = "Bull Researcher" if debate_order == "bull_first" else "Bear Researcher"
 
         analyst_factories = {
             "market": lambda: create_market_analyst(self._llm_for_role("market_analyst", self.quick_thinking_llm)),
@@ -214,8 +219,8 @@ class GraphSetup:
         workflow.add_edge(first_steps, "Evidence check")
         workflow.add_conditional_edges(
             "Evidence check",
-            lambda state: "Bull Researcher" if state["data_quality"]["status"] == "adequate" else "Portfolio Manager",
-            {"Bull Researcher": "Bull Researcher", "Portfolio Manager": "Portfolio Manager"},
+            lambda state: debate_start if state["data_quality"]["status"] == "adequate" else "Portfolio Manager",
+            {"Bull Researcher": "Bull Researcher", "Bear Researcher": "Bear Researcher", "Portfolio Manager": "Portfolio Manager"},
         )
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
@@ -225,7 +230,11 @@ class GraphSetup:
                 self.conditional_logic.should_continue_debate,
                 DEBATE_PATH_MAP,
             )
-        workflow.add_edge("Research Manager", "Trader")
+        workflow.add_conditional_edges(
+            "Research Manager",
+            lambda state: "Trader" if state.get("research_validation", {}).get("status") == "validated" else "Portfolio Manager",
+            {"Trader": "Trader", "Portfolio Manager": "Portfolio Manager"},
+        )
         workflow.add_conditional_edges(
             "Trader",
             lambda state: "Aggressive Analyst" if state.get("trader_validation", {}).get("status") == "validated" else "Portfolio Manager",

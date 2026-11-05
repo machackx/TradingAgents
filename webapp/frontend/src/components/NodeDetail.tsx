@@ -1,4 +1,5 @@
 import { fmtClock, fmtCount, fmtDuration, shortJson } from "../format";
+import { skipReason } from "../checks";
 import {
   ANALYST_LABELS,
   DEBATE_LABELS,
@@ -89,7 +90,7 @@ export function NodeDetail({ run, nodeId, now }: Props) {
       {status === "pending" && <p className="muted">尚未开始。</p>}
       {status === "skipped" && (
         <p className="muted">
-          这一步没有执行。证据检查判定资料不足或交易提议未通过程序校验时，流程会跳过中间环节，直接由投资组合经理给出“待复核”。
+          这一步没有执行。{skipReason(run, nodeId)}
         </p>
       )}
       {status === "stopped" && <p className="muted">运行在这一步进行中时结束了（取消或出错）。</p>}
@@ -433,6 +434,8 @@ function UpdateView({ node }: { node: NodeState }) {
         if (key === "data_quality") return <DataQuality key={key} data={value} />;
         if (key === "analyst_evidence") return <Evidence key={key} data={value} />;
         if (key === "trader_validation") return <Validation key={key} data={value} />;
+        if (key === "research_validation") return <Validation key={key} data={value} label="研究评估" />;
+        if (key === "portfolio_validation") return <Validation key={key} data={value} label="最终决策" />;
         if (key === "memory_settlement") return <MemorySettlementView key={key} data={value} />;
         if (key === "memory_note")
           return value ? (
@@ -599,12 +602,12 @@ function Evidence({ data }: { data: Record<string, Record<string, EvidenceEntry>
   );
 }
 
-function Validation({ data }: { data: Record<string, any> }) {
+function Validation({ data, label: subject = "交易提议" }: { data: Record<string, any>; label?: string }) {
   if (!data) return null;
   const label = { validated: "通过程序校验", invalid: "未通过程序校验", unparsed: "无法解析" }[data.status as string] ?? data.status;
   return (
     <div>
-      <p className={data.status === "validated" ? "ok" : "warn"}>交易提议{label}。</p>
+      <p className={data.status === "validated" ? "ok" : "warn"}>{subject}{label}。</p>
       {(data.issues ?? []).length > 0 && (
         <ul className="small bad">
           {data.issues.map((x: string) => (
@@ -619,10 +622,10 @@ function Validation({ data }: { data: Record<string, any> }) {
           ))}
         </ul>
       )}
-      {data.raw_proposal && (
+      {(data.raw_proposal || data.raw_assessment) && (
         <details className="block">
-          <summary>查看被程序校验拦截前的模型原始提议</summary>
-          <Markdown text={String(data.raw_proposal)} />
+          <summary>查看被校验拦截前的模型原始结果</summary>
+          <Markdown text={String(data.raw_proposal || data.raw_assessment)} />
         </details>
       )}
     </div>

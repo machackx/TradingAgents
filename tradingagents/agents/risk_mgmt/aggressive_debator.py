@@ -5,6 +5,7 @@ from tradingagents.agents.context import (
     opponent_argument_or_opening,
     report_or_absent,
 )
+from tradingagents.agents.rating_policy import risk_instruction
 
 
 def create_aggressive_debator(llm):
@@ -33,7 +34,12 @@ def create_aggressive_debator(llm):
 
 {trader_decision}
 
-Your task is to create a compelling case for the trader's decision by questioning and critiquing the conservative and neutral stances to demonstrate why your high-reward perspective offers the best path forward. Incorporate insights from the following sources into your arguments:
+Your task is to independently assess whether the trader's decision captures the best supported
+opportunity. Challenge the decision when it sacrifices supported upside or takes unrewarded risk;
+you are not required to defend it. Compare the opportunity costs of buying, holding and selling.
+Incorporate insights from the following sources into your arguments:
+
+{risk_instruction(state)}
 
 {instrument_context}
 {portfolio_context}

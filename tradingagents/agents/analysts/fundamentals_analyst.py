@@ -32,6 +32,11 @@ def create_fundamentals_analyst(llm):
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_insider_transactions` for recent insider buying and selling."
             + " Before finishing a stock report, request the balance sheet, income statement and cashflow."
             " Missing or withheld statements must be named; a company profile alone does not satisfy the evidence requirement."
+            " Keep reporting currency, statement units, fiscal periods and per-share/ADR ratios explicit."
+            " Do not mix quarterly, year-to-date, annual and TTM figures or assume share counts are comparable."
+            " Reconcile cash-flow definitions and capex sign conventions before deriving free cash flow."
+            " Identify unresolved contradictions and the affected conclusions; missing or contradictory"
+            " vendor fields are data-quality limitations, not proof of deteriorating company performance."
             + ANALYST_SUMMARY_INSTRUCTION
             + get_language_instruction()
         )

@@ -166,6 +166,30 @@ def test_reports_without_tool_evidence_cannot_produce_an_actionable_rating(tmp_p
 
 
 @pytest.mark.unit
+def test_research_data_conflicts_skip_trader_and_risk_debate(tmp_path, monkeypatch, offline):
+    monkeypatch.setitem(STRUCTURED, schemas.ResearchPlan, schemas.ResearchPlan(
+        recommendation="Underweight", rationale="Unresolved currency and per-share conflicts",
+        strategic_actions="Review source filings", evidence_status="insufficient", confidence="low",
+    ))
+    graph = _graph(tmp_path, monkeypatch, ScriptedModel(structured=True))
+    state, rating = graph.propagate("NVDA", TRADE_DATE)
+    assert rating == "REVIEW" and state["research_validation"]["status"] == "invalid"
+    assert not state["trader_investment_plan"] and not state["risk_debate_state"]["history"]
+    assert state["portfolio_validation"]["issues"] == state["research_validation"]["issues"]
+    assert graph.memory_log.load_entries()[0]["rating"] == "REVIEW"
+
+
+@pytest.mark.unit
+def test_bear_first_runs_both_sides_and_preserves_their_labels(tmp_path, monkeypatch, offline):
+    graph = _graph(tmp_path, monkeypatch, ScriptedModel(structured=True), research_debate_order="bear_first")
+    state, rating = graph.propagate("NVDA", TRADE_DATE)
+    history = state["investment_debate_state"]["history"]
+    assert history.index("Bear Analyst:") < history.index("Bull Analyst:")
+    assert state["investment_debate_state"]["count"] == 2
+    assert rating == "Overweight"
+
+
+@pytest.mark.unit
 def test_an_interrupted_run_resumes_from_its_checkpoint(tmp_path, monkeypatch, offline):
     from unittest.mock import Mock
 
@@ -353,7 +377,9 @@ def test_past_decisions_settle_alongside_the_analysts(tmp_path, monkeypatch, off
     assert not settled["pending"]
     lessons = graph.memory_log.get_past_context("NVDA", as_of=TRADE_DATE)
     assert lessons
-    pm_prompt = next(c[1] for c in model.seen if c[0] == "Portfolio Manager")
+    pm_prompts = [c[1] for c in model.seen if c[0] == "Portfolio Manager"]
+    assert lessons not in pm_prompts[0]  # blind evidence assessment precedes advice and memory
+    pm_prompt = pm_prompts[-1]
     assert lessons in pm_prompt
 
 

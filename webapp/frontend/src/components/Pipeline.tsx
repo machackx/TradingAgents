@@ -1,4 +1,5 @@
 import { fmtCount, fmtDuration } from "../format";
+import { researchRejected } from "../checks";
 import { NODE_STATUS_LABELS, PHASE_LABELS, STEP_LABELS, nodeLabel, ratingLabel } from "../labels";
 import { displayStatus, nodeElapsed, type NodeState, type RunState } from "../runState";
 import { NodeStatusDot } from "./Badges";
@@ -37,6 +38,7 @@ function outcome(n: NodeState): string | null {
     return dq ? (dq.status === "adequate" ? "证据充足 → 进入辩论" : "证据不足 → 跳过辩论") : null;
   }
   if (DEBATERS.has(n.id)) return n.turns.length ? `发言 ${n.turns.length} 次` : null;
+  if (n.id === "Research Manager" && researchRejected(n)) return "未通过研究校验 → 待复核";
   const plan = n.structured.find((s) => s.schema === "research_plan")?.data;
   if (plan) return `建议 ${ratingLabel(String(plan.recommendation))}`;
   const proposal = n.structured.find((s) => s.schema === "trader_proposal")?.data;

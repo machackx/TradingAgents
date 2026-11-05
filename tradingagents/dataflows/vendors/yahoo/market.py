@@ -5,12 +5,12 @@ from typing import Annotated
 import pandas as pd
 import yfinance as yf
 from dateutil.relativedelta import relativedelta
-from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.dataflows.pinned_market import current_snapshot
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import price_text, raise_for_empty, yf_retry
+from tradingagents.dataflows.vendors.yahoo.indicators import indicator_series, unavailable_indicator
 from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale, load_ohlcv
 
 logger = logging.getLogger(__name__)
@@ -217,21 +217,13 @@ def _get_stock_stats_bulk(
     Fetches data once and calculates indicator for all available dates.
     Returns dict mapping date strings to indicator values.
     """
-    from stockstats import wrap
-
     data = load_ohlcv(symbol, as_of_date)
-    df = wrap(data)
-    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
-
-    df[indicator]  # This triggers stockstats to calculate the indicator
-
     result_dict = {}
-    for _, row in df.iterrows():
-        date_str = row["Date"]
-        indicator_value = row[indicator]
+    values = indicator_series(data, indicator)
+    for date_str, indicator_value in zip(data["Date"].dt.strftime("%Y-%m-%d"), values, strict=True):
 
         if pd.isna(indicator_value):
-            result_dict[date_str] = "N/A"
+            result_dict[date_str] = unavailable_indicator(indicator)
         else:
             result_dict[date_str] = str(indicator_value)
 
@@ -285,15 +277,12 @@ def get_stock_stats(
     ],
 ):
     data = load_ohlcv(symbol, as_of_date)
-    df = wrap(data)
-    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
     as_of_str = pd.to_datetime(as_of_date).strftime("%Y-%m-%d")
-
-    df[indicator]  # trigger stockstats to calculate the indicator
-    matching_rows = df[df["Date"].str.startswith(as_of_str)]
+    values = indicator_series(data, indicator)
+    matching_rows = values[data["Date"].dt.strftime("%Y-%m-%d") == as_of_str]
 
     if not matching_rows.empty:
-        indicator_value = matching_rows[indicator].values[0]
-        return indicator_value
+        value = matching_rows.iloc[0]
+        return unavailable_indicator(indicator) if pd.isna(value) else value
     else:
         return "N/A: Not a trading day (weekend or holiday)"

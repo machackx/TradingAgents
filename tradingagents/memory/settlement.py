@@ -153,11 +153,21 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                    if e["ticker"] == ticker and e.get("rating") != RATING_REVIEW]
         if not pending:
             return result
-        benchmark = resolve_benchmark(ticker, config)
         for entry in pending:
             try:
+                policy = entry.get("evaluation_policy")
+                if policy is not None:
+                    if not isinstance(policy, dict) or not isinstance(policy.get("benchmark"), str) or not policy["benchmark"].strip():
+                        raise ValueError("saved evaluation policy has no benchmark")
+                    holding = policy.get("holding_period_days")
+                    if isinstance(holding, bool) or not isinstance(holding, int) or holding <= 0:
+                        raise ValueError("saved evaluation policy has no valid holding period")
+                    benchmark = normalize_symbol(policy["benchmark"])
+                else:
+                    benchmark = resolve_benchmark(ticker, config)
+                    holding = config.get("holding_period_days", 5)
                 raw, alpha, days, resolution_date = fetch_returns(
-                    ticker, entry["date"], config.get("holding_period_days", 5), benchmark=benchmark,
+                    ticker, entry["date"], holding, benchmark=benchmark,
                 )
             except Exception as exc:
                 logger.warning("Prices for settling %s on %s were unavailable: %s", ticker, entry["date"], exc)

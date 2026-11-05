@@ -20,8 +20,16 @@ from tradingagents.agents.context import (
 from tradingagents.agents.evidence import review_report
 from tradingagents.agents.proposal_validation import labelled_fields
 from tradingagents.agents.rating import parse_rating
+from tradingagents.agents.rating_policy import (
+    analyst_evidence,
+    evaluate_assessment,
+    has_reports,
+    policy_footer,
+    policy_instruction,
+)
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
-from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured
+from tradingagents.dataflows.config import get_config
 
 
 def create_portfolio_manager(llm):
@@ -44,9 +52,34 @@ def create_portfolio_manager(llm):
         quality = state.get("data_quality")
         if quality is not None and quality.get("status") != "adequate":
             issues.extend(quality.get("issues") or ["Evidence coverage has not passed the required checks."])
+        research_validation = state.get("research_validation")
+        if research_validation and research_validation.get("status") != "validated":
+            issues.extend(research_validation.get("issues") or ["Research assessment has not passed validation."])
         validation = state.get("trader_validation")
-        if validation is not None and validation.get("status") != "validated":
+        # An empty trader check is expected when an upstream check skipped it.
+        # Without an upstream blocker, that same empty check still fails closed.
+        if (validation is not None and validation.get("status") != "validated"
+                and (validation or not issues)):
             issues.extend(validation.get("issues") or ["Trader proposal has not passed programmatic validation."])
+
+        contract = policy_instruction(state)
+        evidence = analyst_evidence(state)
+        independent = ""
+        if not issues and get_config().get("rating_independent_review", True) and has_reports(state):
+            independent_prompt = f"""Form an independent portfolio research rating from the original
+analyst evidence, before seeing any research manager, trader or risk-debate recommendation.
+{instrument_context}
+{contract}
+{evidence}
+Return a PortfolioDecision including confidence, expected_alpha_pct (or null), evidence_status,
+executive_summary and investment_thesis. Give a research view, not an assumed account order.
+{NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
+            independent, independent_issues = evaluate_assessment(
+                llm, structured_llm, PortfolioDecision, render_pm_decision,
+                independent_prompt, state, "Portfolio Manager independent",
+            )
+            if independent_issues:
+                independent = review_report(independent_issues)
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -63,12 +96,13 @@ def create_portfolio_manager(llm):
 
 ---
 
-**Rating Scale** (use exactly one):
-- **Buy**: Strong conviction to enter or add to position
-- **Overweight**: Favorable outlook, gradually increase exposure
-- **Hold**: Maintain current position, no action needed
-- **Underweight**: Reduce exposure, take partial profits
-- **Sell**: Exit position or avoid entry
+{contract}
+
+**Original analyst evidence:**
+{evidence}
+
+**Independent assessment before seeing recommendations:**
+{independent or '(not requested or analyst reports unavailable)'}
 
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
@@ -79,7 +113,11 @@ def create_portfolio_manager(llm):
 
 ---
 
-Ground every conclusion in specific evidence from the analysts. The risk debate always contains conflicting stances; deciding which is stronger is the job, so conflict alone is not a reason to Hold. Commit to the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not force a direction to appear decisive. Weigh the analysts on their merits, independent of speaking order.
+Ground conclusions in original evidence. Audit prior recommendations, including your independent
+assessment, rather than treating them as facts or votes. Explain a changed view with a specific
+fact or corrected inference. Repeated claims and speaking order carry no extra weight.
+Keep the relative research rating separate from position limits and account actions: an
+unknown or concentrated portfolio does not itself imply the stock will underperform.
 
 Any supplied numeric trader proposal has already been checked. Do not introduce different order
 quantities, entry/stop levels or sizing arithmetic in your narrative. Missing cash, NAV and currency
@@ -90,28 +128,29 @@ conversion remain unknown; a research rating alone does not certify an affordabl
 Write these sections, in this order, starting with the rating on its own line:
 
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
+- **Confidence**: high / medium / low, independent from direction
+- **Expected Alpha Pct**: a supported number, or not provided
+- **Evidence Status**: usable / limited / insufficient
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
-        # The typed rating is the decision; the rendered text only carries it.
-        # Read back from text, a rating the thesis quotes could replace it.
+        # Typed decisions render their own explicit opening rating; the common
+        # assessment check rejects contradictory alpha instead of relabelling it.
+        raw_assessment = ""
         if issues:
             final_trade_decision = review_report(issues)
             final_rating = "REVIEW"
         else:
-            decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
-            if decision is not None:
-                try:
-                    decision = PortfolioDecision.model_validate(decision.model_dump())
-                    final_trade_decision = render_pm_decision(decision)
-                    final_rating = decision.rating.value
-                except ValueError:
-                    issues.append("Portfolio Manager returned an invalid structured decision.")
-            else:
-                final_trade_decision = llm.invoke(prompt).content
-                final_rating = parse_rating(final_trade_decision)
+            final_trade_decision, assessment_errors = evaluate_assessment(
+                llm, structured_llm, PortfolioDecision, render_pm_decision,
+                prompt, state, "Portfolio Manager",
+            )
+            raw_assessment = final_trade_decision
+            issues.extend(assessment_errors)
+            final_rating = parse_rating(final_trade_decision)
+            if not assessment_errors:
                 try:
                     target = labelled_fields(final_trade_decision, unique_fields={"price target"}).get("price target")
                     if target and target.casefold() not in {"not provided", "none", "n/a"}:
@@ -122,6 +161,8 @@ Write these sections, in this order, starting with the rating on its own line:
                     issues.append("Portfolio Manager target price must be unambiguous, finite and positive.")
             if issues:
                 final_trade_decision, final_rating = review_report(issues), "REVIEW"
+            elif has_reports(state):
+                final_trade_decision += policy_footer(state)
 
         new_risk_debate_state = {
             "history": risk_debate_state["history"],
@@ -139,6 +180,11 @@ Write these sections, in this order, starting with the rating on its own line:
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
+            "independent_portfolio_decision": independent,
+            "portfolio_validation": {
+                "status": "invalid" if issues else "validated", "issues": issues,
+                **({"raw_assessment": raw_assessment} if issues and raw_assessment else {}),
+            },
         }
 
     return portfolio_manager_node

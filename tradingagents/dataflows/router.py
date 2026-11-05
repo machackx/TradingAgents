@@ -1,6 +1,9 @@
 import logging
+import re
+from datetime import date
 
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.errors import (
     NoMarketDataError,
     VendorNotConfiguredError,
@@ -197,6 +200,43 @@ def no_data_available(error: NoMarketDataError) -> str:
     )
 
 
+def _latest_statement_period(text: str) -> str | None:
+    match = re.search(r"^# Latest tagged period: (\d{4}-\d{2}-\d{2})$", text, re.MULTILINE)
+    return match[1] if match else None
+
+
+def _supplement_sec_statement(method, result, remaining_vendors, args, kwargs):
+    """Keep dated SEC history and try an opted-in live source for stale coverage.
+
+    Companyfacts may omit recent 6-K exhibits. Only today's runs can use Yahoo's
+    undated statement vintage, and only if Yahoo was configured after SEC.
+    """
+    if method not in {"get_balance_sheet", "get_income_statement", "get_cashflow"}:
+        return result
+    freq = kwargs.get("freq", args[1] if len(args) > 1 else "quarterly")
+    as_of_date = kwargs.get("as_of_date", args[2] if len(args) > 2 else None) or get_current_date()
+    latest = _latest_statement_period(result)
+    if (freq.lower() != "quarterly" or as_of_date != get_current_date() or latest is None
+            or (date.fromisoformat(as_of_date) - date.fromisoformat(latest)).days <= 200):
+        return result
+    if "yfinance" not in remaining_vendors:
+        return result
+    try:
+        supplement = VENDOR_METHODS[method]["yfinance"](*args, **kwargs)
+        newer = _latest_statement_period(supplement)
+        if newer is not None and latest < newer <= as_of_date:
+            return (
+                result + "\n## Yahoo Finance recent-period supplement\n"
+                "SEC companyfacts coverage is older than two quarters. The following configured "
+                "live source supplies newer periods for today's analysis only; its filing vintage "
+                "is not certified. Keep its periods, currency and share basis separate from SEC data.\n\n"
+                + supplement
+            )
+    except Exception as exc:
+        logger.warning("Recent-period Yahoo supplement failed for %s: %s", method, exc)
+    return result + "\n# Recent-period coverage: configured Yahoo source did not supply a newer period; SEC history retained.\n"
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
@@ -228,12 +268,17 @@ def route_to_vendor(method: str, *args, **kwargs):
     last_unavailable: VendorUnavailableError | None = None
     failed: Exception | None = None     # a vendor that raised something untyped
     first_error: Exception | None = None
-    for vendor in vendor_chain:
+    for vendor_index, vendor in enumerate(vendor_chain):
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            if vendor == "sec_edgar":
+                result = _supplement_sec_statement(
+                    method, result, vendor_chain[vendor_index + 1:], args, kwargs,
+                )
+            return result
         except VendorUnavailableError as e:
             logger.warning("Vendor %r unavailable for %s: %s; trying next vendor.", vendor, method, e)
             # Kept so an all-unavailable chain can say the vendor was the

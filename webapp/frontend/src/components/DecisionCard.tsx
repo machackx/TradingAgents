@@ -1,4 +1,5 @@
 import { RATING_LABELS, RATING_TONE, nodeLabel } from "../labels";
+import { researchRating, reviewReasons } from "../checks";
 import { structuredOf, type RunState } from "../runState";
 import { RatingBadge } from "./Badges";
 import { Markdown } from "./Markdown";
@@ -31,10 +32,8 @@ const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)
 export function DecisionCard({ run }: { run: RunState }) {
   const rating = run.rating ?? null;
   const decision = structuredOf(run, "Portfolio Manager", "portfolio_decision") as Data | undefined;
-  const plan = structuredOf(run, "Research Manager", "research_plan") as Data | undefined;
   const proposal = traderProposal(run);
   const validation = (run.nodes.Trader?.update as Data | undefined)?.trader_validation as Data | undefined;
-  const quality = (run.nodes["Evidence check"]?.update as Data | undefined)?.data_quality as Data | undefined;
   const close = lastClose(run);
   const review = rating === "REVIEW";
   const tone = rating ? RATING_TONE[rating] : "level";
@@ -42,13 +41,10 @@ export function DecisionCard({ run }: { run: RunState }) {
   const entry = num(proposal?.entry_price);
   const stop = num(proposal?.stop_loss);
   const target = num(decision?.price_target);
-  const reasons = [
-    ...(quality?.status === "insufficient_data" ? quality.issues ?? [] : []),
-    ...(validation?.status === "invalid" ? validation.issues ?? [] : []),
-  ] as string[];
+  const reasons = reviewReasons(run);
 
   const chain = [
-    { node: "Research Manager", label: "建议", value: plan?.recommendation },
+    { node: "Research Manager", label: "建议", value: researchRating(run) },
     { node: "Trader", label: "方向", value: proposal?.action },
     { node: "Portfolio Manager", label: "评级", value: rating },
   ];

@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 import yfinance as yf
@@ -18,6 +19,7 @@ from tradingagents.dataflows.vendors.yahoo.common import (
 
 # Quote currencies Yahoo gives in a minor unit, and the main unit of each.
 _MAIN_UNIT = {"GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
+logger = logging.getLogger(__name__)
 
 
 def get_fundamentals(
@@ -112,10 +114,28 @@ def _statement(ticker, freq, as_of_date, title, quarterly_attr, annual_attr) -> 
         return withheld
     what = title.lower()
     attr = quarterly_attr if freq.lower() == "quarterly" else annual_attr
-    data = yf_retry(lambda: getattr(yf.Ticker(canonical), attr))
+    company = yf.Ticker(canonical)
+    data = yf_retry(lambda: getattr(company, attr))
     if data is None or data.empty:
         raise_for_empty(ticker, canonical, f"{what} data")
-    return f"# {title} data for {canonical} ({freq})\n" + data.to_csv()
+    latest_period = max(data.columns).strftime("%Y-%m-%d")
+    reported = None
+    try:
+        profile = yf_retry(lambda: company.info)
+        if isinstance(profile, dict):
+            reported = profile.get("financialCurrency")
+    except Exception as exc:
+        logger.warning("Statement currency lookup unavailable for %s: %s", canonical, exc)
+    units = (f"Monetary totals are in raw {reported} (Yahoo financialCurrency), not millions."
+             if reported else "Monetary totals are raw provider values; reporting currency was not supplied.")
+    return (
+        f"# {title} data for {canonical} ({freq})\n"
+        f"# Latest tagged period: {latest_period}\n"
+        "# Source: Yahoo Finance current statement snapshot; historical filing vintage is not certified.\n"
+        f"# Units: {units} EPS is unscaled and uses the vendor's share basis; no ADS conversion is inferred. "
+        "Do not merge these figures with SEC columns without matching currency, share basis and periods.\n"
+        + data.to_csv()
+    )
 
 
 def get_balance_sheet(

@@ -4,6 +4,7 @@ from tradingagents.agents.context import (
     opponent_argument_or_opening,
     report_or_absent,
 )
+from tradingagents.agents.rating_policy import policy_instruction
 from tradingagents.agents.viewpoint import RESEARCHER_SUMMARY_INSTRUCTION
 
 
@@ -39,6 +40,7 @@ Key points to focus on:
 - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
 
 Resources available:
+{policy_instruction(state)}
 {instrument_context}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}

@@ -351,6 +351,8 @@ TradingAgents persists two kinds of state across runs.
 
 The memory log is always on. Each completed run appends its decision to `~/.tradingagents/memory/trading_memory.md`. While the analysts of a later run work, TradingAgents settles every logged decision whose holding period has passed: it fetches the realised return (raw, and alpha against the instrument's regional benchmark) and generates a one-paragraph reflection. The Portfolio Manager then reads the most recent decisions for the same ticker plus recent lessons from other tickers, so each analysis carries forward what worked and what didn't. If settling fails, the run goes on and its report says so.
 
+New research ratings use an explicit regional benchmark and the same holding window as settlement. Confidence and evidence quality are reported separately; insufficient evidence or a numerical forecast that contradicts its rating produces `REVIEW`. Each manager first assesses the analyst reports without earlier recommendations, adding two model calls per complete run. A new decision saves its benchmark and horizon for later settlement even if the configuration changes. See [评级口径、配置与固定材料对照](RATING_POLICY.zh-CN.md) for the configurable thresholds, limitations and replay tool.
+
 Override the path with `TRADINGAGENTS_MEMORY_LOG_PATH`.
 
 To settle decisions without running an analysis, for a scheduled job, call `ta.settle_all_pending()`; it returns the decisions it settled and any it could not.

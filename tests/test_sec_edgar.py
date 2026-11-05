@@ -355,3 +355,90 @@ def test_a_figure_under_a_million_is_not_printed_as_zero(monkeypatch):
                         lambda url: TICKER_MAP if "company_tickers" in url else facts)
 
     assert _table(sec_edgar.get_income_statement("AAPL", "annual", "2026-03-01"))[1]["Revenue"] == ["-0.0250", "0.303"]
+
+
+def _serve_statement(monkeypatch, facts, kind="income_statement", as_of="2026-11-05"):
+    monkeypatch.setattr(sec_edgar, "_fetch_json", lambda url:
+                        TICKER_MAP if "company_tickers" in url else {"facts": {"us-gaap": facts}})
+    return getattr(sec_edgar, f"get_{kind}")("AAPL", "annual", as_of)
+
+
+def _annual_units(**units):
+    return {"units": {unit: [_fact("2025-12-31", value, "2026-04-15", form="20-F", start="2025-01-01")]
+                      for unit, value in units.items()}}
+
+
+@pytest.mark.unit
+def test_financial_company_total_revenue_reconciles_with_cost_and_gross_profit(monkeypatch):
+    """Contract customer revenue excludes other revenue for FUTU; it is not the total."""
+    out = _serve_statement(monkeypatch, {
+        "RevenueFromContractWithCustomerExcludingAssessedTax": _annual_units(HKD=10_572_744_000),
+        "Revenues": _annual_units(HKD=22_846_898_000),
+        "CostOfRevenue": _annual_units(HKD=2_942_355_000),
+        "GrossProfit": _annual_units(HKD=19_904_543_000),
+    })
+    c = _table(out)[1]
+    assert float(c["Revenue (HKD)"][0]) == 22_846_898_000
+    assert float(c["Revenue (HKD)"][0]) - float(c["Cost of Revenue (HKD)"][0]) == float(c["Gross Profit (HKD)"][0])
+
+
+@pytest.mark.unit
+def test_total_and_parent_equity_are_distinct_and_reconcile_noncontrolling_interest(monkeypatch):
+    out = _serve_statement(monkeypatch, {
+        "Assets": _annual_units(HKD=228_436_876_000),
+        "Liabilities": _annual_units(HKD=188_115_754_000),
+        "StockholdersEquity": _annual_units(HKD=40_001_188_000),
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": _annual_units(HKD=40_321_122_000),
+        "MinorityInterest": _annual_units(HKD=319_934_000),
+    }, "balance_sheet")
+    c = {name: float(values[0]) for name, values in _table(out)[1].items()}
+    assert c["Total Assets (HKD)"] - c["Total Liabilities (HKD)"] == c["Stockholders Equity (HKD)"]
+    assert c["Equity Attributable to Parent (HKD)"] + c["Noncontrolling Interest (HKD)"] == c["Stockholders Equity (HKD)"]
+
+
+@pytest.mark.unit
+def test_eps_never_relabels_historical_hkd_values_as_usd(monkeypatch):
+    out = _serve_statement(monkeypatch, {"EarningsPerShareDiluted": {"units": {
+        "HKD": [_fact("2020-12-31", 1.26, "2021-04-01", form="20-F", start="2020-01-01")],
+        "USD/shares": [_fact("2025-12-31", 1.29, "2026-04-15", form="20-F", start="2025-01-01")],
+        "HKD/shares": [_fact("2025-12-31", 10.03, "2026-04-15", form="20-F", start="2025-01-01")],
+    }}})
+    c = _table(out)[1]
+    assert c["Diluted EPS (HKD/shares)"] == ["1.26", "10.03"]
+    assert c["Diluted EPS (USD/shares)"] == ["", "1.29"]
+    assert "No ordinary-share/ADS conversion ratio is inferred" in out
+
+
+@pytest.mark.unit
+def test_same_currency_eps_alias_takes_the_latest_filing(monkeypatch):
+    out = _serve_statement(monkeypatch, {"EarningsPerShareDiluted": {"units": {
+        "HKD": [_fact("2025-12-31", 10.00, "2026-04-15", form="20-F", start="2025-01-01")],
+        "HKD/shares": [_fact("2025-12-31", 10.03, "2026-05-01", form="20-F/A", start="2025-01-01")],
+    }}})
+    assert _table(out)[1]["Diluted EPS (HKD/shares)"] == ["10.03"]
+
+
+@pytest.mark.unit
+def test_currency_columns_preserve_both_values_without_whole_million_rounding(monkeypatch):
+    out = _serve_statement(monkeypatch, {"Revenues": _annual_units(HKD=22_846_898_000, USD=2_935_374_000)})
+    c = _table(out)[1]
+    assert c["Revenue"] == ["2935.374"]
+    assert c["Revenue (HKD)"] == ["22846898000.00"]
+    assert "USD monetary totals are in millions" in out
+
+
+@pytest.mark.unit
+def test_future_currency_facts_cannot_leak_into_a_historical_statement(monkeypatch):
+    facts = {"Revenues": {"units": {
+        "USD": [_fact("2025-12-31", 100_000_000, "2026-02-01", start="2025-01-01")],
+        "HKD": [_fact("2025-12-31", 780_000_000, "2026-04-01", start="2025-01-01")],
+    }}}
+    out = _serve_statement(monkeypatch, facts, as_of="2026-03-01")
+    assert "Revenue (HKD)" not in out
+    assert _table(out)[1]["Revenue"] == ["100"]
+
+
+@pytest.mark.unit
+def test_capex_sign_and_cashflow_scope_are_explicit(monkeypatch):
+    out = _serve_statement(monkeypatch, {"PaymentsToAcquirePropertyPlantAndEquipment": _annual_units(HKD=54_732_000)}, "cashflow")
+    assert "positive means cash spent" in out and "customer-fund movements" in out

@@ -51,7 +51,8 @@ def test_a_run_reports_every_node_from_start_to_decision(tmp_path, monkeypatch):
     assert started["analysts"] == ["market", "social", "news", "fundamentals"]
     drawn = {n["id"]: n["phase"] for n in started["graph"]["nodes"]}
     assert set(ANALYSTS) <= set(drawn) and "other" not in drawn.values()
-    assert {"source": "Research Manager", "target": "Trader", "conditional": False} in started["graph"]["edges"]
+    assert {"source": "Research Manager", "target": "Trader", "conditional": True} in started["graph"]["edges"]
+    assert {"source": "Research Manager", "target": "Portfolio Manager", "conditional": True} in started["graph"]["edges"]
     assert finished["type"] == "run_finished" and finished["rating"] == run.rating == "Overweight"
     assert run.final_state["final_rating"] == "Overweight"
 
@@ -103,7 +104,8 @@ def test_a_run_reports_every_node_from_start_to_decision(tmp_path, monkeypatch):
     assert updates["Prepare market data"]["market_data"]["status"] == "available"
     assert updates["Evidence check"]["data_quality"]["status"] == "adequate"
     assert updates["Trader"]["trader_validation"]["status"] == "validated"
-    assert updates["Portfolio Manager"] == {"final_rating": "Overweight"}
+    assert updates["Portfolio Manager"]["final_rating"] == "Overweight"
+    assert "**Rating**: Overweight" in updates["Portfolio Manager"]["independent_portfolio_decision"]
     assert "market_report" not in updates["Market Analyst"]   # reports come as their own events
 
     models = _of(events, "llm_call")
