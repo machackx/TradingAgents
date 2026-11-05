@@ -196,6 +196,11 @@ class ChatGPTPlanChatOpenAI(NormalizedChatOpenAI):
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # Plan streams may put parallel-call arguments only on output_item.done,
+        # which LangChain's streaming reader ignores. Sequential calls emit the
+        # argument deltas it consumes, preserving the tool's required inputs.
+        if payload.get("tools"):
+            payload.setdefault("parallel_tool_calls", False)
         for item in payload.get("input") or []:
             if isinstance(item, dict) and item.get("role") == "system":
                 item["role"] = "developer"

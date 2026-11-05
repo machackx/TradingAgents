@@ -49,6 +49,10 @@ def create_llm_client(
         from .bedrock_client import BedrockClient
         return BedrockClient(model, base_url, **kwargs)
 
+    if provider_lower in ("antigravity", "agy"):
+        from .antigravity_client import AntigravityClient
+        return AntigravityClient(model, base_url, **kwargs)
+
     from .openai_client import OpenAIClient, is_openai_compatible
     if is_openai_compatible(provider_lower):
         return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
@@ -98,6 +102,15 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
 
     if provider == "google":
         thinking_level = config.get("google_thinking_level")
+        if thinking_level:
+            kwargs["thinking_level"] = thinking_level
+
+    elif provider in ("antigravity", "agy"):
+        thinking_level = (
+            config.get("google_thinking_level")
+            or config.get("openai_reasoning_effort")
+            or config.get("anthropic_effort")
+        )
         if thinking_level:
             kwargs["thinking_level"] = thinking_level
 

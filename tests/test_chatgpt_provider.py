@@ -63,6 +63,21 @@ def test_a_run_without_a_sign_in_stops_before_any_request(monkeypatch, tmp_path)
 
 
 @pytest.mark.unit
+def test_plan_tools_default_to_sequential_calls(signed_in):
+    llm = _llm()
+
+    def lookup(city: str) -> str:
+        """Look up one city."""
+        return city
+
+    bound = llm.bind_tools([lookup])
+    payload = llm._get_request_payload([HumanMessage("Look up Shanghai")], **bound.kwargs)
+    assert payload["parallel_tool_calls"] is False
+    assert payload["tools"][0]["parameters"]["required"] == ["city"]
+    assert payload["stream"] is True and payload["store"] is False
+
+
+@pytest.mark.unit
 def test_a_chatgpt_tier_beside_an_openai_tier_keeps_each_credential(signed_in, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     config = {**default_config.DEFAULT_CONFIG, "llm_provider": "openai", "backend_url": "https://api.openai.com/v1",

@@ -93,6 +93,23 @@ _MINIMAX_MODELS: dict[str, list[ModelOption]] = {
 }
 
 
+_ANTIGRAVITY_MODELS: dict[str, list[ModelOption]] = {
+    "quick": [
+        ("Gemini 3.8 Flash - Fast, low latency", "gemini-3.8-flash"),
+        ("Gemini 3.8 Flash (High) - Deep reasoning", "gemini-3.8-flash-high"),
+        ("Gemini 3.7 Flash - General tasks", "gemini-3.7-flash"),
+        ("Custom model ID", "custom"),
+    ],
+    "deep": [
+        ("Gemini 4 Argon - Frontier coding and reasoning", "gemini-4-argon"),
+        ("Gemini 3.8 Flash (High) - Deep reasoning", "gemini-3.8-flash-high"),
+        ("Claude Opus 4.6 (Thinking) - Complex reasoning", "claude-opus-4.6-think"),
+        ("Gemini 3.8 Flash - Fast alternative", "gemini-3.8-flash"),
+        ("Custom model ID", "custom"),
+    ],
+}
+
+
 MODEL_OPTIONS: ProviderModeOptions = {
     "openai": {
         "quick": [
@@ -223,6 +240,9 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "bedrock": _CUSTOM_ONLY,
     # The plan's models are listed live from OpenAI once signed in.
     "chatgpt": _CUSTOM_ONLY,
+    # Google Antigravity CLI (`agy`) models.
+    "antigravity": _ANTIGRAVITY_MODELS,
+    "agy": _ANTIGRAVITY_MODELS,
 }
 
 

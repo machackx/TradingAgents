@@ -387,6 +387,7 @@ def _llm_provider_table() -> list[tuple[str, str, str | None]]:
     return [
         ("OpenAI", "openai", "https://api.openai.com/v1"),
         ("Google", "google", None),
+        ("Antigravity CLI (agy)", "antigravity", None),
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("ChatGPT (Plus or Pro plan)", "chatgpt", "https://api.openai.com/v1"),
         ("xAI", "xai", "https://api.x.ai/v1"),
