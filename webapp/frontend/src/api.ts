@@ -60,6 +60,10 @@ export const api = {
     request<{ login: LoginAttempt }>(`/api/auth/logins/${loginId}/cancel`, {
       method: "POST", headers: { "X-TradingAgents-Auth": "1" },
     }),
+  submitLoginCode: (loginId: string, code: string) =>
+    request<{ ok: boolean }>(`/api/auth/logins/${loginId}/code`, {
+      method: "POST", headers: { "X-TradingAgents-Auth": "1" }, body: JSON.stringify({ code }),
+    }),
   options: () => request<Options>("/api/options"),
   saveSettings: (body: WebSettingsRequest) =>
     request<Options>("/api/settings", { method: "PUT", body: JSON.stringify(body) }),

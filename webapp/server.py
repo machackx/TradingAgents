@@ -261,6 +261,17 @@ def create_app(config: dict | None = None, *, graph_factory=None,
                 raise HTTPException(404, str(exc)) from None
         return JSONResponse({"login": auth.login_status()}, headers={"Cache-Control": "no-store"})
 
+    @app.post("/api/auth/logins/{login_id}/code")
+    def submit_login_code(login_id: str, body: dict,
+                          x_tradingagents_auth: str | None = Header(default=None)):
+        with auth.lock:
+            require_auth_action("chatgpt", x_tradingagents_auth)
+            try:
+                auth.submit_code(login_id, body.get("code"))
+            except AuthError as exc:
+                raise HTTPException(400, str(exc)) from None
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
     @app.get("/api/options")
     def options():
         provider = (config.get("llm_provider") or "").lower()

@@ -58,7 +58,7 @@ export interface ProviderOption {
   models: { quick: ModelOption[]; deep: ModelOption[] };
 }
 
-export type SubscriptionProvider = "chatgpt" | "codex";
+export type SubscriptionProvider = "chatgpt" | "codex" | "claude-cli" | "antigravity";
 
 export interface SubscriptionAccount {
   provider: SubscriptionProvider;
@@ -76,6 +76,7 @@ export interface LoginAttempt {
   provider: SubscriptionProvider;
   status: "starting" | "pending" | "succeeded" | "failed" | "cancelled";
   auth_url: string | null;
+  input_required?: boolean;
   expires_at: number;
   error: string | null;
 }

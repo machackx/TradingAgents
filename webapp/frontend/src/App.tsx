@@ -8,9 +8,10 @@ import { SubscriptionAccounts } from "./components/SubscriptionAccounts";
 import type { Options, RunSummary, SavedReport, SubscriptionAccount } from "./types";
 import { UpDownContext, useUpDownSetting } from "./updown";
 
-type Route = { page: "new" } | { page: "run"; runId: string };
+type Route = { page: "new" } | { page: "accounts" } | { page: "run"; runId: string };
 
 function parseRoute(hash: string): Route {
+  if (hash === "#/accounts") return { page: "accounts" };
   const match = hash.match(/^#\/runs\/([0-9a-f]{32})$/);
   return match ? { page: "run", runId: match[1] } : { page: "new" };
 }
@@ -86,7 +87,11 @@ export function App() {
           <span style={{ color: "var(--fall)" }}>跌</span>
           <span className="muted small">{updown === "red" ? "红涨绿跌" : "绿涨红跌"}</span>
         </button>
-        <a className="button primary" href="#/">
+        <a className={`button${route.page === "accounts" ? " active" : ""}`} href="#/accounts"
+          aria-current={route.page === "accounts" ? "page" : undefined}>
+          订阅账号
+        </a>
+        <a className="button primary" href="#/" aria-current={route.page === "new" ? "page" : undefined}>
           新建分析
         </a>
       </header>
@@ -98,11 +103,14 @@ export function App() {
           onSelect={open}
         />
         <main className="main">
-          <SubscriptionAccounts runActive={runs.some((run) => run.status === "running")}
-            onAuthBusy={setAuthBusy} onAccountsUpdated={setAccounts} />
-          {route.page === "run" ? (
+          <div hidden={route.page !== "accounts"}>
+            <SubscriptionAccounts runActive={runs.some((run) => run.status === "running")}
+              onAuthBusy={setAuthBusy} onAccountsUpdated={setAccounts} />
+          </div>
+          {route.page === "run" && (
             <RunView key={route.runId} runId={route.runId} onEnded={refresh} />
-          ) : (
+          )}
+          <div hidden={route.page !== "new"}>
             <NewRunForm
               options={formOptions}
               authBusy={authBusy}
@@ -112,7 +120,7 @@ export function App() {
                 open(runId);
               }}
             />
-          )}
+          </div>
           <p className="disclaimer muted small">
             仅供研究使用，不构成投资建议。模型结论可能出错，请结合自己的判断。
           </p>

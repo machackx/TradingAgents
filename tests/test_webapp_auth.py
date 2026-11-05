@@ -38,6 +38,13 @@ def _eventually(read, accept, timeout=5):
 def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(chatgpt_auth, "AUTH_FILE", tmp_path / "chatgpt.json")
     monkeypatch.setattr(chatgpt_auth, "_revoke", lambda *args: True)
+    monkeypatch.setattr(auth, "GEMINI_DIRECTORY", tmp_path / "gemini")
+
+    def missing():
+        raise RuntimeError("not installed in the test sandbox")
+
+    monkeypatch.setattr(auth, "find_claude_binary", missing)
+    monkeypatch.setattr(auth, "find_agy_binary", missing)
     state = tmp_path / "codex.json"
     state.write_text(json.dumps({"account": None, "mode": "success"}))
     journal = tmp_path / "rpc.jsonl"
@@ -122,7 +129,8 @@ def test_current_accounts_are_reported_without_credentials(client, sandbox):
     _state(sandbox, account={"type": "chatgpt", "email": "codex@example.com", "planType": "plus"})
 
     state = _accounts(client)
-    gpt, codex = state["accounts"]
+    gpt, codex = state["accounts"][:2]
+    assert [account["provider"] for account in state["accounts"]] == list(auth.PROVIDERS)
     assert gpt["authenticated"] and gpt["email"] == "gpt@example.com"
     assert codex["authenticated"] and codex["email"] == "codex@example.com"
     assert codex["plan"] == "plus" and state["login"] is None
@@ -234,11 +242,13 @@ def test_missing_codex_and_broken_status_are_explicit(client, sandbox, monkeypat
 
 @pytest.mark.parametrize("path", ["/api/auth/chatgpt/login", "/api/auth/chatgpt/logout",
                                   "/api/auth/codex/login", "/api/auth/codex/logout",
-                                  "/api/auth/logins/unknown/cancel"])
+                                  "/api/auth/claude-cli/login", "/api/auth/claude-cli/logout",
+                                  "/api/auth/antigravity/login", "/api/auth/antigravity/logout",
+                                  "/api/auth/logins/unknown/cancel", "/api/auth/logins/unknown/code"])
 def test_account_mutations_require_a_non_simple_local_request(client, path):
-    assert client.post(path).status_code == 403
-    assert client.post(path, headers={**HEADERS, "Origin": "https://evil.example"}).status_code == 403
-    assert client.post(path, headers={**HEADERS, "Host": "evil.example"}).status_code == 400
+    assert client.post(path, json={"code": "example"}).status_code == 403
+    assert client.post(path, json={"code": "example"}, headers={**HEADERS, "Origin": "https://evil.example"}).status_code == 403
+    assert client.post(path, json={"code": "example"}, headers={**HEADERS, "Host": "evil.example"}).status_code == 400
 
 
 def test_unknown_providers_and_login_ids_are_rejected(client):
@@ -330,3 +340,156 @@ def test_server_shutdown_cancels_a_pending_login(sandbox):
         _eventually(client.app.state.auth.login_status, lambda s: s["status"] == "pending")
         process = client.app.state.auth._process
     assert process.poll() is not None
+
+
+@pytest.fixture
+def subscription_clis(sandbox, monkeypatch):
+    root = sandbox["root"]
+    gemini = auth.GEMINI_DIRECTORY
+    gemini.mkdir()
+    credential = gemini / "jetski-standalone-oauth-token"
+    credential.write_text(json.dumps({
+        "id_token_email": "google-old@example.com", "auth_method": "oauth-personal",
+        "token": {"access_token": SECRET, "refresh_token": SECRET},
+    }))
+    claude_state = root / "claude-state.json"
+    claude_state.write_text(json.dumps({"loggedIn": True, "email": "claude-old@example.com",
+                                       "authMethod": "claude.ai", "subscriptionType": "pro"}))
+    script = root / "subscription-cli"
+    script.write_text(f"#!{sys.executable}\n" + '''
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[0]).parent
+claude = root / "claude-state.json"
+google = root / "gemini" / "jetski-standalone-oauth-token"
+args = sys.argv[1:]
+def write_account():
+    if args[0] == "auth":
+        claude.write_text(json.dumps({"loggedIn": True, "email": "claude-new@example.com",
+            "authMethod": "claude.ai", "subscriptionType": "pro", "token": "''' + SECRET + '''"}))
+    else:
+        google.write_text(json.dumps({"id_token_email": "google-new@example.com",
+            "auth_method": "oauth-personal", "token": {"access_token": "''' + SECRET + '''"}}))
+if args[:2] == ["auth", "status"]:
+    assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
+    print(claude.read_text(), flush=True)
+elif args[:2] == ["auth", "logout"]:
+    claude.write_text(json.dumps({"loggedIn": False}))
+elif args[:2] == ["auth", "login"] or args[:2] == ["acp", "--login"]:
+    url = ("https://claude.ai/oauth/authorize?state=demo" if args[0] == "auth"
+           else "https://accounts.google.com/o/oauth2/auth?state=demo&client_id=demo")
+    print("Open this link: " + url, flush=True)
+    print("Paste the authorization code:", flush=True)
+    code = sys.stdin.readline().strip()
+    if code != "one-time-code":
+        print("raw error ''' + SECRET + '''", flush=True)
+        raise SystemExit(1)
+    write_account()
+    print("Login successful", flush=True)
+elif args[0] == "acp":
+    for line in sys.stdin:
+        request = json.loads(line)
+        assert request["jsonrpc"] == "2.0"
+        if request["method"] == "initialize":
+            result = {"protocolVersion": 1, "agentCapabilities": {"auth": {"logout": {}}}}
+        elif request["method"] == "logout":
+            google.write_text(json.dumps({"token": {}}))
+            result = {}
+        else:
+            raise SystemExit(2)
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+else:
+    raise SystemExit(2)
+''')
+    script.chmod(0o700)
+    monkeypatch.setattr(auth, "find_claude_binary", lambda: str(script))
+    monkeypatch.setattr(auth, "find_agy_binary", lambda: str(script))
+    return root
+
+
+def test_claude_and_antigravity_metadata_are_projected_without_tokens(client, subscription_clis):
+    accounts = _accounts(client)["accounts"]
+    assert accounts[2]["email"] == "claude-old@example.com"
+    assert accounts[2]["plan"] == "pro" and accounts[2]["authenticated"]
+    assert accounts[3]["email"] == "google-old@example.com" and accounts[3]["authenticated"]
+    assert SECRET not in json.dumps(accounts)
+
+
+@pytest.mark.parametrize("provider,email", [
+    ("claude-cli", "claude-new@example.com"), ("antigravity", "google-new@example.com"),
+])
+def test_native_cli_login_code_and_logout_round_trip(client, subscription_clis, provider, email):
+    response = client.post(f"/api/auth/{provider}/login", headers=HEADERS)
+    assert response.status_code == 202
+    login_id = response.json()["login"]["id"]
+    login = _eventually(client.app.state.auth.login_status, lambda s: s["input_required"])
+    assert login["auth_url"].startswith("https://")
+    response = client.post(f"/api/auth/logins/{login_id}/code", headers=HEADERS,
+                           json={"code": "one-time-code"})
+    assert response.status_code == 200 and "one-time-code" not in response.text
+    state = _finished(client)
+    assert state["login"]["status"] == "succeeded" and not state["login"]["input_required"]
+    account = next(a for a in _accounts(client)["accounts"] if a["provider"] == provider)
+    assert account["email"] == email and account["authenticated"]
+    assert client.post(f"/api/auth/{provider}/logout", headers=HEADERS).status_code == 200
+    assert not next(a for a in _accounts(client)["accounts"] if a["provider"] == provider)["authenticated"]
+
+
+@pytest.mark.parametrize("provider", ["claude-cli", "antigravity"])
+def test_native_cli_cancel_kills_code_prompt_without_replacing_account(client, subscription_clis, provider):
+    client.post(f"/api/auth/{provider}/login", headers=HEADERS)
+    login = _eventually(client.app.state.auth.login_status, lambda s: s["input_required"])
+    process = client.app.state.auth._process
+    assert client.post(f"/api/auth/logins/{login['id']}/cancel", headers=HEADERS).status_code == 200
+    assert process.poll() is not None
+    account = next(a for a in _accounts(client)["accounts"] if a["provider"] == provider)
+    assert account["email"].endswith("-old@example.com")
+    response = client.post(f"/api/auth/logins/{login['id']}/code", headers=HEADERS,
+                           json={"code": "one-time-code"})
+    assert response.status_code == 400 and "one-time-code" not in response.text
+
+
+@pytest.mark.parametrize("code", ["first\nsecond", "first\rsecond", "", "x" * 4097, None, 123])
+def test_invalid_authorization_codes_are_rejected_without_echoing_them(client, code):
+    response = client.post("/api/auth/logins/unknown/code", headers=HEADERS, json={"code": code})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "请粘贴有效的授权码或授权完成后的完整地址。"
+
+
+@pytest.mark.parametrize("provider,url", [
+    ("claude-cli", "https://accounts.google.com/o/oauth2/auth"),
+    ("antigravity", "https://claude.ai/oauth/authorize"),
+    ("claude-cli", "https://claude.ai/oauth/code?code=private"),
+    ("antigravity", "https://accounts.google.com/o/oauth2/auth?access_token=private"),
+])
+def test_login_links_are_provider_specific_and_cannot_contain_credentials(provider, url):
+    with pytest.raises(auth.AuthError):
+        auth._authorization_url(url, provider)
+
+
+def test_claude_subscription_uses_the_selected_local_account_instead_of_inherited_api_tokens(monkeypatch):
+    from tradingagents.llm_clients.claude_cli_client import claude_subscription_environment
+
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", SECRET)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", SECRET)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/test/claude-config")
+    environment = claude_subscription_environment()
+    assert not {"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"} & environment.keys()
+    assert environment["CLAUDE_CONFIG_DIR"] == "/test/claude-config"
+
+
+def test_antigravity_api_key_mode_is_not_labelled_as_a_subscription(client, subscription_clis, monkeypatch):
+    settings = auth.GEMINI_DIRECTORY / "antigravity-cli" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"modelProvider": "gemini"}))
+    monkeypatch.setenv("GEMINI_API_KEY", SECRET)
+    account = _accounts(client)["accounts"][3]
+    assert account["authenticated"] and account["auth_mode"] == "apiKey" and account["email"] is None
+
+
+def test_antigravity_logout_requires_the_advertised_capability(monkeypatch):
+    rpc = auth.AntigravityRPC.__new__(auth.AntigravityRPC)
+    rpc.initialized = {"agentCapabilities": {}}
+    with pytest.raises(auth.AuthError, match="不支持"):
+        rpc.logout()

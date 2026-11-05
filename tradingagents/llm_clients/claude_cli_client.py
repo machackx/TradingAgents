@@ -40,6 +40,20 @@ from .validators import validate_model
 
 logger = logging.getLogger(__name__)
 
+
+def claude_subscription_environment() -> dict[str, str]:
+    """Use the CLI's saved subscription, consistently in inference and account controls.
+
+    API credentials inherited from a parent app otherwise override the account
+    selected by ``claude auth login``. API billing belongs to the anthropic provider.
+    """
+    excluded = {
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    }
+    return {key: value for key, value in os.environ.items() if key not in excluded}
+
 def _default_claude_candidates() -> tuple[Path, ...]:
     candidates: list[Path] = [
         Path.home() / ".local" / "bin" / "claude",
@@ -135,6 +149,7 @@ class ChatClaudeCLI(BaseChatModel):
                     text=True,
                     timeout=self.timeout,
                     cwd=tempfile.gettempdir(),
+                    env=claude_subscription_environment(),
                     check=False,
                 )
                 if completed.returncode != 0:

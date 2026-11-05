@@ -121,6 +121,12 @@ details > summary {
   padding: 10px 20px;
   background: var(--panel);
   border-bottom: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+.topbar .button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-wash);
 }
 .brand {
   margin-right: auto;
@@ -519,7 +525,7 @@ fieldset {
 .account-heading {
   justify-content: space-between;
 }
-.account-heading h2 {
+.account-heading h1 {
   margin: 0;
   font-size: 18px;
 }
@@ -549,6 +555,17 @@ fieldset {
 }
 .account-footnote {
   margin: 12px 0 0;
+}
+.account-code {
+  margin-top: 14px;
+}
+.account-code label {
+  display: block;
+  margin-bottom: 6px;
+}
+.account-code input {
+  flex: 1;
+  min-width: 180px;
 }
 .role-summary-actions {
   display: inline-flex;
