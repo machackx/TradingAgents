@@ -161,6 +161,8 @@ class TradingAgentsGraph:
             # before the Memory Log step would resume without the lessons.
             "analysts=parallel",
             "memory=parallel",
+            "evidence=required-v1",
+            "market=pinned-v1",
             f"settings={digest}",
         ])
 
@@ -272,6 +274,10 @@ class TradingAgentsGraph:
             "output_language": cfg.get("output_language"),
             "data_vendors": dict(cfg.get("data_vendors") or {}),
             "tool_vendors": dict(cfg.get("tool_vendors") or {}),
+            "chinese_sources_enabled": cfg.get("chinese_sources_enabled", True),
+            "chinese_news_sources": cfg.get("chinese_news_sources", "futu,eastmoney"),
+            "futu_community_enabled": cfg.get("futu_community_enabled", True),
+            "futu_announcements_enabled": cfg.get("futu_announcements_enabled", True),
         }
 
     def save_reports(self, final_state, ticker, save_path=None, html=True) -> Path:
@@ -304,6 +310,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             instrument_context=self.resolve_instrument_context(company_name, asset_type, trade_date),
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
+            portfolio_data=portfolio.model_dump(mode="json") if portfolio is not None else {},
         )
 
     def _memory_step(self, state):

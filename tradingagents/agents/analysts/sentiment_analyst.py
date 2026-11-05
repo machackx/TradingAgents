@@ -1,11 +1,12 @@
-"""Sentiment analyst: one sentiment report from three sources.
+"""Sentiment analyst: one sentiment report from news and social sources.
 
 The node fetches its sources before calling the model and puts them in the
 prompt, so the model reports on data it was given rather than inventing posts:
 
-  1. News headlines: Yahoo Finance
+  1. News headlines: configured vendor and enabled Chinese-market supplements
   2. StockTwits messages: the cashtag stream, with Bullish/Bearish tags
   3. Reddit posts: r/wallstreetbets, r/stocks, r/investing, or crypto communities for a crypto pair
+  4. Futu community samples for HK/A shares and mapped Chinese ADRs
 
 Each source is trimmed to the analysis window. With a TypeSafe key, the social
 posts are screened by Jev first (see post_screen). These feeds serve recent items
@@ -23,6 +24,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.evidence import prefetched_evidence
 from tradingagents.agents.post_screen import jev_screen
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
 from tradingagents.agents.structured import (
@@ -31,6 +33,7 @@ from tradingagents.agents.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.chinese_news import fetch_futu_sentiment
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,
@@ -47,7 +50,7 @@ def _seven_days_back(trade_date: str) -> str:
 def create_sentiment_analyst(llm):
     """Create a sentiment analyst node for the trading graph.
 
-    Pre-fetches news + StockTwits + Reddit data, injects them into the
+    Pre-fetches news, StockTwits, Reddit and enabled Futu community data into the
     prompt as structured blocks, and produces a deterministic sentiment
     report via structured output (with a free-text fallback for providers
     that do not support it).
@@ -60,7 +63,7 @@ def create_sentiment_analyst(llm):
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
 
-        # Pre-fetch all three sources. Each fetcher degrades gracefully and
+        # Pre-fetch the enabled sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
@@ -74,6 +77,7 @@ def create_sentiment_analyst(llm):
         reddit_block = fetch_reddit_posts(
             ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
         )
+        futu_block = fetch_futu_sentiment(ticker, start_date, end_date)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -83,6 +87,7 @@ def create_sentiment_analyst(llm):
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
             subreddits=subreddits,
+            futu_block=futu_block,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -122,6 +127,9 @@ def create_sentiment_analyst(llm):
         return {
             "messages": [AIMessage(content=report_text)],
             "sentiment_report": report_text,
+            "analyst_evidence": {"social": prefetched_evidence(
+                news=news_block, stocktwits=stocktwits_block, reddit=reddit_block, futu=futu_block,
+            )},
         }
 
     return sentiment_analyst_node
@@ -136,6 +144,7 @@ def _build_system_message(
     stocktwits_block: str,
     reddit_block: str,
     subreddits: tuple[str, ...] = DEFAULT_SUBREDDITS,
+    futu_block: str = "",
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     if subreddits == DEFAULT_SUBREDDITS:
@@ -144,11 +153,22 @@ def _build_system_message(
         character = f"r/{subreddits[0]} leans toward the coin's holders; r/CryptoCurrency and r/CryptoMarkets are broader"
     else:
         character = "r/CryptoCurrency and r/CryptoMarkets are broad crypto communities"
-    return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
+    futu_section = (f"""
+### Futu / 富途牛牛社区 — recent Chinese investor discussion sample
+These are personal opinions, not authoritative news or issuer disclosures. There are no
+user-labeled sentiment tags or population-wide bullish/bearish percentages. Any sentiment
+you infer applies only to the supplied sample; name the actual sample size and data limits.
+Cross-listed securities may appear together; distinguish listings and trading currencies.
+
+<start_of_futu_community>
+{futu_block}
+<end_of_futu_community>
+""" if futu_block else "")
+    return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on the complementary data sources that have already been collected for you.
 
 ## Data sources (pre-fetched, in this prompt)
 
-### News headlines — Yahoo Finance, past 7 days
+### News headlines — configured vendors and enabled Chinese sources, past 7 days
 Institutional framing. Fact-driven, slower-moving signal.
 
 <start_of_news>
@@ -168,6 +188,7 @@ Community discussion, without vote or comment counts. Subreddit character matter
 <start_of_reddit>
 {reddit_block}
 <end_of_reddit>
+{futu_section}
 
 ## How to analyze this data (best practices)
 

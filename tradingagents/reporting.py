@@ -6,6 +6,7 @@ CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
 run produces the same on-disk report tree a CLI run does.
 """
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -41,8 +42,24 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
         vendors = {**(s("data_vendors") or {}), **(s("tool_vendors") or {})}
         if vendors:
             lines.append("- Data vendors: " + ", ".join(f"{k} {v}" for k, v in vendors.items()))
+        if s("chinese_sources_enabled"):
+            lines.append("- Chinese supplements (HK/A shares and mapped ADRs): "
+                         f"news {s('chinese_news_sources', '')}; "
+                         f"Futu announcements {bool(s('futu_announcements_enabled'))}; "
+                         f"Futu community {bool(s('futu_community_enabled'))}")
     if final_state.get("memory_note"):
         lines.append(f"- Memory log: {final_state['memory_note']}")
+    quality = final_state.get("data_quality") or {}
+    if quality:
+        lines.append(f"- Evidence check: {quality.get('status', 'not checked')}")
+        lines.extend(f"- Evidence gap: {issue}" for issue in quality.get("issues", []))
+    validation = final_state.get("trader_validation") or {}
+    if validation:
+        lines.append(f"- Proposal check: {validation.get('status', 'not checked')}")
+    snapshot = final_state.get("market_data") or {}
+    if snapshot.get("snapshot_id"):
+        lines.append(f"- Market snapshot: {snapshot['snapshot_id']}; captured {snapshot['captured_at_utc']}; "
+                     f"latest bar {snapshot['latest_bar_date']} ({snapshot['bar_status']})")
     return "\n".join(lines) + "\n\n"
 
 
@@ -101,6 +118,18 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
     """
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
+    snapshot = final_state.get("market_data") or {}
+    snapshot_path = save_path / "market_snapshot.json"
+    if snapshot.get("status") == "available":
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    else:
+        snapshot_path.unlink(missing_ok=True)
+    checks = {key: final_state[key] for key in ("data_quality", "trader_validation", "analyst_evidence") if key in final_state}
+    checks_path = save_path / "analysis_checks.json"
+    if checks:
+        checks_path.write_text(json.dumps(checks, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    else:
+        checks_path.unlink(missing_ok=True)
     parts = _report_parts(final_state)
     sections = []
     for heading, folder, written in parts:

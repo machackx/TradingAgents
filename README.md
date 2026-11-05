@@ -293,6 +293,21 @@ A tier on its own provider uses that provider's key and default endpoint; set `q
 
 See `tradingagents/default_config.py` for all configuration options.
 
+Runs now check actual evidence coverage before issuing a usable rating, validate
+numeric trade proposals, and pin the default Yahoo market dataset across price,
+indicator and verification tools (including checkpoint resume). Failed checks
+produce `REVIEW`; saved reports include the checks and market dataset. See
+[数据与交易建议检查](DECISION_CHECKS.zh-CN.md) for the requirements and limits.
+
+### Chinese financial sources
+
+HK/A shares and mapped Chinese ADRs now receive additive Chinese news from Futu
+and Eastmoney, Futu announcement search, and Futu community samples for the
+sentiment analyst. These supplements run even when the primary news vendor
+returns data. No API key or OpenD is needed. Publication dates, source links,
+original media names where supplied, and coverage/failure notices are retained.
+See [中文信源说明](CHINESE_SOURCES.zh-CN.md) for coverage, settings and limitations.
+
 ### Fundamentals as filed
 
 US company statements come from SEC EDGAR, which records the date every figure was filed. A run dated in the past reads the statements exactly as they stood that day: a fiscal year that has ended but has not been filed yet is not served, and a figure restated later still reads as first reported. Apple's 2008 total assets were filed as $39.6B and restated to $36.2B in 2010, so a run dated in between reads $39.6B. EDGAR needs no account or API key.

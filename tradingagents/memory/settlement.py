@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from tradingagents.agents.rating import RATING_REVIEW
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.market import get_closes
 
@@ -147,7 +148,8 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
     with memory_log.settling(wait=wait) as held:
         if not held:
             return result
-        pending = [e for e in memory_log.get_pending_entries() if e["ticker"] == ticker]
+        pending = [e for e in memory_log.get_pending_entries()
+                   if e["ticker"] == ticker and e.get("rating") != RATING_REVIEW]
         if not pending:
             return result
         benchmark = resolve_benchmark(ticker, config)

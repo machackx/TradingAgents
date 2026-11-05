@@ -171,7 +171,7 @@ def run_backtest(
 
     graph = TradingAgentsGraph(selected_analysts, config=run_config)
     result = BacktestResult(run_id=run_id, log_path=Path(run_config["memory_log_path"]))
-    done = {(e["ticker"], e["date"]) for e in graph.memory_log.load_entries()}
+    done = {(e["ticker"], e["date"]) for e in graph.memory_log.load_entries() if e["rating"] != RATING_REVIEW}
 
     # A ticker or date given twice is one cell, run and settled once.
     tickers, dates = list(dict.fromkeys(tickers)), list(dict.fromkeys(dates))

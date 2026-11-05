@@ -4,15 +4,30 @@ Each dated tool takes the run's ``trade_date`` from graph state (``InjectedState
 and never serves data past it, whatever date the model asks for.
 """
 
+import logging
 from typing import Annotated, Literal
 
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
+from tradingagents.dataflows.chinese_news import supplement_global_news, supplement_news
 from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.pinned_market import pinned_market_data, snapshot_note
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
 from tradingagents.dataflows.vendors.yahoo.snapshot import build_verified_market_snapshot
+
+logger = logging.getLogger(__name__)
+
+
+def _primary_news(method: str, *args) -> str:
+    try:
+        return route_to_vendor(method, *args)
+    except Exception as exc:
+        # The independently configured Chinese supplements still run. Retain
+        # the failure category without exposing a provider URL/key in output.
+        logger.warning("Primary vendor failed for %s (%s)", method, type(exc).__name__)
+        return vendor_unavailable(method, VendorUnavailableError(type(exc).__name__))
 
 
 @tool
@@ -21,6 +36,7 @@ def get_stock_data(
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    market_data: Annotated[dict | None, InjectedState("market_data")] = None,
 ) -> str:
     """
     Retrieve stock price data (OHLCV) for the instrument under analysis.
@@ -35,7 +51,11 @@ def get_stock_data(
         start_date, end_date = as_of_window(start_date, end_date, trade_date)
     except ValueError as e:
         return str(e)
-    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+    if market_data and market_data.get("status") == "unavailable":
+        return "DATA_UNAVAILABLE: the run's pinned market dataset could not be retrieved."
+    with pinned_market_data(market_data or None):
+        result = route_to_vendor("get_stock_data", symbol, start_date, end_date)
+    return snapshot_note(market_data) + result
 
 
 @tool
@@ -45,6 +65,7 @@ def get_indicators(
     curr_date: Annotated[str, "The current trading date you are trading on, YYYY-mm-dd"],
     look_back_days: Annotated[int, "how many days to look back"] = 30,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    market_data: Annotated[dict | None, InjectedState("market_data")] = None,
 ) -> str:
     """
     Retrieve a single technical indicator for the instrument under analysis.
@@ -61,12 +82,15 @@ def get_indicators(
     curr_date = as_of(curr_date, trade_date)
     indicators = [i.strip().lower() for i in indicator.split(",") if i.strip()]
     results = []
-    for ind in indicators:
-        try:
-            results.append(route_to_vendor("get_indicators", symbol, ind, curr_date, look_back_days))
-        except ValueError as e:
-            results.append(str(e))
-    return "\n\n".join(results)
+    if market_data and market_data.get("status") == "unavailable":
+        return "DATA_UNAVAILABLE: the run's pinned market dataset could not be retrieved."
+    with pinned_market_data(market_data or None):
+        for ind in indicators:
+            try:
+                results.append(route_to_vendor("get_indicators", symbol, ind, curr_date, look_back_days))
+            except ValueError as e:
+                results.append(str(e))
+    return snapshot_note(market_data) + "\n\n".join(results)
 
 
 @tool
@@ -77,6 +101,7 @@ def get_verified_market_snapshot(
         int, "number of recent trading rows to include for sanity-checking"
     ] = 30,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    market_data: Annotated[dict | None, InjectedState("market_data")] = None,
 ) -> str:
     """Deterministic verification snapshot for exact market-data claims.
 
@@ -87,7 +112,11 @@ def get_verified_market_snapshot(
     """
     # An exception out of a tool would end the run.
     try:
-        return build_verified_market_snapshot(symbol, as_of(curr_date, trade_date), look_back_days)
+        if market_data and market_data.get("status") == "unavailable":
+            return "DATA_UNAVAILABLE: the run's pinned market dataset could not be retrieved."
+        with pinned_market_data(market_data or None):
+            result = build_verified_market_snapshot(symbol, as_of(curr_date, trade_date), look_back_days)
+        return snapshot_note(market_data) + result
     except VendorUnavailableError as exc:
         return vendor_unavailable("get_verified_market_snapshot", exc)
     except NoMarketDataError as exc:
@@ -177,7 +206,9 @@ def get_news(
 ) -> str:
     """
     Retrieve news data for the instrument under analysis.
-    Uses the configured news_data vendor.
+    Uses the configured news_data vendor plus enabled Chinese-market supplements
+    (Futu news/announcements and Eastmoney). Publication times and source links
+    are included; search samples do not provide complete historical coverage.
     Args:
         start_date (str): Start date in yyyy-mm-dd format
         end_date (str): End date in yyyy-mm-dd format
@@ -188,7 +219,8 @@ def get_news(
         start_date, end_date = as_of_window(start_date, end_date, trade_date)
     except ValueError as e:
         return str(e)
-    return route_to_vendor("get_news", ticker, start_date, end_date)
+    primary = _primary_news("get_news", ticker, start_date, end_date)
+    return supplement_news(primary, ticker, start_date, end_date)
 
 
 @tool
@@ -197,10 +229,12 @@ def get_global_news(
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,
     limit: Annotated[int | None, "Max articles to return; omit to use the configured default"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    ticker: Annotated[str, InjectedState("company_of_interest")] = "",
 ) -> str:
     """
     Retrieve global news data.
-    Uses the configured news_data vendor. Defaults for look_back_days and
+    Uses the configured news_data vendor and enabled Chinese macro news
+    supplements for HK/A shares and mapped Chinese ADRs. Defaults for look_back_days and
     limit come from DEFAULT_CONFIG (global_news_lookback_days,
     global_news_article_limit); pass explicit values to override.
 
@@ -212,7 +246,9 @@ def get_global_news(
     Returns:
         str: A formatted string containing global news data
     """
-    return route_to_vendor("get_global_news", as_of(curr_date, trade_date), look_back_days, limit)
+    curr_date = as_of(curr_date, trade_date)
+    primary = _primary_news("get_global_news", curr_date, look_back_days, limit)
+    return supplement_global_news(primary, ticker, curr_date, look_back_days, limit)
 
 
 @tool

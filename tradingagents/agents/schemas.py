@@ -18,16 +18,23 @@ so that:
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
 # call validates instead of erroring (#1058). Pydantic still parses real numeric
 # strings ("189.5") to float.
 _NULLISH_FLOAT = {"", "none", "n/a", "na", "null", "nil", "-", "tbd", "unknown"}
+
+
+def sizing_percentages(text: str) -> list[float]:
+    return [float(value) for value in re.findall(
+        r"([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*[%％]", text.replace(",", ""),
+    )]
 
 
 def _coerce_optional_float(value):
@@ -46,6 +53,8 @@ def _coerce_optional_float(value):
     validation, and discard the whole decision, losing every field the model got
     right along with the price.
     """
+    if isinstance(value, bool):
+        raise ValueError("a price must be a number, not a boolean")
     if not isinstance(value, str):
         return value
     text = value.strip()
@@ -152,6 +161,8 @@ class TraderProposal(BaseModel):
     entry, stop-loss, and sizing.
     """
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     action: TraderAction = Field(
         description="The transaction direction. Exactly one of Buy / Hold / Sell.",
     )
@@ -163,6 +174,7 @@ class TraderProposal(BaseModel):
     )
     entry_price: float | None = Field(
         default=None,
+        gt=0,
         description=(
             "Optional entry price target as an absolute number in the instrument's "
             "quote currency (e.g. 189.5), never a percentage or a range. Omit it "
@@ -171,6 +183,7 @@ class TraderProposal(BaseModel):
     )
     stop_loss: float | None = Field(
         default=None,
+        gt=0,
         description=(
             "Optional stop-loss as an absolute price in the instrument's quote "
             "currency (e.g. 172.0), never a percentage. Convert a percentage "
@@ -181,11 +194,37 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    position_size_pct: float | None = Field(
+        default=None, ge=0, le=100,
+        description="Optional total target position as a percentage of portfolio NAV, from 0 to 100.",
+    )
+    order_quantity: float | None = Field(
+        default=None, gt=0,
+        description="Optional number of units to buy or sell; a positive quantity, not a percentage.",
+    )
 
     @field_validator("entry_price", "stop_loss", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @field_validator("position_size_pct", "order_quantity", mode="before")
+    @classmethod
+    def _not_boolean(cls, v):
+        if isinstance(v, bool):
+            raise ValueError("a quantity or percentage must be numeric, not boolean")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_trade(self):
+        if (self.action == TraderAction.BUY and self.entry_price is not None
+                and self.stop_loss is not None and self.stop_loss >= self.entry_price):
+            raise ValueError("a Buy stop-loss must be below its entry price")
+        if self.position_sizing:
+            for value in sizing_percentages(self.position_sizing):
+                if not 0 <= value <= 100:
+                    raise ValueError("position sizing percentages must be between 0 and 100")
+        return self
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -206,6 +245,9 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
                          ("Stop Loss", proposal.stop_loss),
                          ("Position Sizing", proposal.position_sizing)):
         parts.extend(["", f"**{label}**: {value if value is not None and value != '' else 'not provided'}"])
+    for label, value in (("Position Size Pct", proposal.position_size_pct), ("Order Quantity", proposal.order_quantity)):
+        if value is not None:
+            parts.extend(["", f"**{label}**: {value}"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
@@ -226,6 +268,8 @@ class PortfolioDecision(BaseModel):
     output instructions, so the prompt body only needs to convey context and
     the rating-scale guidance.
     """
+
+    model_config = ConfigDict(allow_inf_nan=False)
 
     rating: PortfolioRating = Field(
         description=(
@@ -252,6 +296,7 @@ class PortfolioDecision(BaseModel):
     )
     price_target: float | None = Field(
         default=None,
+        gt=0,
         description="Optional target price in the instrument's quote currency.",
     )
     time_horizon: str | None = Field(

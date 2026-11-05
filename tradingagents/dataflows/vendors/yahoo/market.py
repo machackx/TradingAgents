@@ -8,6 +8,7 @@ from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
+from tradingagents.dataflows.pinned_market import current_snapshot
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import price_text, raise_for_empty, yf_retry
 from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale, load_ohlcv
@@ -31,7 +32,11 @@ def get_YFin_data_online(
     # end_date row (and the current day when end_date is today). Request one day
     # past end_date so the requested range is actually inclusive (#986/#987).
     end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
-    data = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_inclusive))
+    if current_snapshot() is not None:
+        data = load_ohlcv(symbol, end_date, fill_gaps=False)
+        data = data[data["Date"] >= pd.Timestamp(start_date)].set_index("Date")
+    else:
+        data = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_inclusive))
 
     # Empty result means the symbol is unknown/delisted. Raise a typed error
     # instead of returning prose: the routing layer turns it into a single

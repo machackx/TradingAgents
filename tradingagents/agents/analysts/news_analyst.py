@@ -28,6 +28,15 @@ def create_news_analyst(llm):
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(start_date, end_date) for news about the {asset_label} under analysis, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + " For HK/A shares and Chinese ADRs, get_news also supplies enabled Chinese sources,"
+            " including Futu news and announcement search and Eastmoney's media search; get_global_news"
+            " adds Chinese macro queries. Cite the supplied publication time, publisher and original URL"
+            " for key claims. Prefer issuer/exchange/regulator disclosures when actually supplied;"
+            " distinguish syndicated reporting and broker opinions from official disclosures."
+            " A Futu aggregation result is not automatically a Futu-authored or official statement."
+            " Do not count reposts as independent confirmations, or an unavailable search as no news."
+            " Call get_news for the company before submitting this report. If it fails, report the gap;"
+            " do not replace missing company evidence with macro headlines."
             + get_language_instruction()
         )
 

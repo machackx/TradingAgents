@@ -3,6 +3,8 @@ from typing import Annotated
 from langgraph.graph import MessagesState
 from typing_extensions import TypedDict
 
+from tradingagents.agents.evidence import merge_evidence
+
 
 # Researcher team state
 class InvestDebateState(TypedDict):
@@ -47,6 +49,11 @@ class AgentState(MessagesState):
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     trade_date: Annotated[str, "The analysis date; data is served as of it"]
+    market_data: Annotated[dict, "Pinned market dataset and provenance; persisted with checkpoints"]
+    analyst_evidence: Annotated[dict, merge_evidence]
+    data_quality: Annotated[dict, "Deterministic evidence coverage for the selected analysts"]
+    trader_validation: Annotated[dict, "Programmatic validation of the transaction proposal"]
+    portfolio_data: Annotated[dict, "Structured holdings and cash used for numeric validation"]
 
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]

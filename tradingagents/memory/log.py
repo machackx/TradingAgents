@@ -4,8 +4,8 @@ import contextlib
 import re
 from pathlib import Path
 
-from tradingagents.agents.rating import parse_rating
-from tradingagents.dataflows.files import locked
+from tradingagents.agents.rating import RATING_REVIEW, parse_rating
+from tradingagents.dataflows.files import locked, replace_file
 
 
 class TradingMemoryLog:
@@ -44,18 +44,24 @@ class TradingMemoryLog:
         if not self._log_path:
             return
         with locked(self._log_path):
-            # Idempotency guard: fast raw-text scan instead of full parse. Any entry
-            # for this ticker and date blocks another, pending or settled: a re-run
-            # after the outcome landed would otherwise count the same decision twice
-            # in past context and in every aggregate over the log.
-            if self._log_path.exists():
-                raw = self._log_path.read_text(encoding="utf-8")
-                for line in raw.splitlines():
-                    if line.startswith(f"[{trade_date} | {ticker} |") and line.endswith("]"):
-                        return
             rating = rating or parse_rating(final_trade_decision)
             tag = f"[{trade_date} | {ticker} | {rating} | pending]"
             entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
+            # A real call for this ticker/date blocks another, pending or settled:
+            # reruns must not count the same decision twice. An unscored REVIEW
+            # may be replaced when the missing evidence is subsequently supplied.
+            if self._log_path.exists():
+                raw = self._log_path.read_text(encoding="utf-8")
+                for block in raw.split(self._SEPARATOR):
+                    old = self._parse_entry(block)
+                    if old and old["ticker"] == ticker and old["date"] == trade_date:
+                        # REVIEW is an unscored attempt, not a settled trading
+                        # call. A successful same-day retry may replace it;
+                        # real decisions retain the original idempotency rule.
+                        if old["rating"] == RATING_REVIEW and rating != RATING_REVIEW:
+                            updated = raw.replace(block, entry.removesuffix(self._SEPARATOR), 1)
+                            replace_file(self._log_path, lambda temp, updated=updated: Path(temp).write_text(updated, encoding="utf-8"))
+                        return
             with open(self._log_path, "a", encoding="utf-8") as f:
                 f.write(entry)
 

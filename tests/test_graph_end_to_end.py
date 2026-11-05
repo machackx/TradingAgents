@@ -29,7 +29,7 @@ TRADE_DATE = "2026-01-09"
 
 # Enough for every free-text reader: the PM's labelled rating and the trader's
 # closing proposal line.
-TEXT = "Report.\n\n**Rating**: Overweight\n\nFINAL TRANSACTION PROPOSAL: **BUY**"
+TEXT = "Report.\n\n**Rating**: Overweight\n\n**Action**: Buy\n\nFINAL TRANSACTION PROPOSAL: **BUY**"
 
 STRUCTURED = {
     schemas.ResearchPlan: schemas.ResearchPlan(
@@ -148,16 +148,42 @@ def test_a_full_run_reaches_a_logged_decision(tmp_path, monkeypatch, offline, st
 
 
 @pytest.mark.unit
+def test_reports_without_tool_evidence_cannot_produce_an_actionable_rating(tmp_path, monkeypatch, offline):
+    class NoTools(ScriptedModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._count()
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(TEXT))])
+
+    model = NoTools(structured=True)
+    graph = _graph(tmp_path, monkeypatch, model)
+    state, rating = graph.propagate("NVDA", TRADE_DATE)
+    assert rating == "REVIEW"
+    assert state["data_quality"]["status"] == "insufficient_data"
+    assert "get_stock_data" in " ".join(state["data_quality"]["issues"])
+    # Only the four analysts run. Research, risk and PM generation are skipped.
+    assert len(model.calls) == 4
+    assert graph.memory_log.load_entries()[0]["rating"] == "REVIEW"
+
+
+@pytest.mark.unit
 def test_an_interrupted_run_resumes_from_its_checkpoint(tmp_path, monkeypatch, offline):
+    from unittest.mock import Mock
+
+    import tradingagents.graph.setup as setup
+
+    prepare = Mock(wraps=setup.prepare_market_snapshot)
+    monkeypatch.setattr(setup, "prepare_market_snapshot", prepare)
     model = ScriptedModel(fail_at=12)            # past the analysts, before the decision
     graph = _graph(tmp_path, monkeypatch, model, checkpoint_enabled=True)
     with pytest.raises(RuntimeError, match="provider unavailable"):
         graph.propagate("NVDA", TRADE_DATE)
     calls_before = len(model.calls)
 
-    _, signal = graph.propagate("NVDA", TRADE_DATE)
+    final, signal = graph.propagate("NVDA", TRADE_DATE)
 
     assert signal == "Overweight"
+    assert prepare.call_count == 1  # The checkpoint's dataset is reused, not downloaded again.
+    assert final["market_data"]["records"][-1]["Close"] == 100.5
     resumed_calls = len(model.calls) - calls_before
     full_run = ScriptedModel()
     _graph(tmp_path / "fresh", monkeypatch, full_run).propagate("NVDA", TRADE_DATE)
@@ -264,7 +290,8 @@ def test_an_analyst_that_keeps_calling_tools_writes_its_report_at_the_limit(tmp_
     assert len(model.tool_turns) == 3 * 3   # three tool-using analysts, three rounds each
     for key in ("market_report", "news_report", "fundamentals_report"):
         assert final_state[key] == TEXT
-    assert rating == "Overweight"
+    assert rating == "REVIEW"
+    assert final_state["data_quality"]["status"] == "insufficient_data"
 
 
 @pytest.mark.unit

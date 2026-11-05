@@ -9,12 +9,14 @@ from tradingagents.agents.context import (
     get_language_instruction,
     get_portfolio_context_from_state,
 )
+from tradingagents.agents.proposal_validation import check_trader_text
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured,
 )
+from tradingagents.dataflows.config import get_config
 
 
 def create_trader(llm):
@@ -57,6 +59,10 @@ def create_trader(llm):
                     "instrument's quote currency (for example 189.5), never a percentage "
                     "or a range; convert a percentage distance to the price level it "
                     "implies, or omit the field if you cannot state a number. "
+                    + "A Buy stop-loss must be strictly below its entry price. Position percentages"
+                    " must be between 0 and 100 and obey the configured cap. Optional Order Quantity"
+                    " must be a positive number of units; do not invent cash, NAV or exchange rates. "
+                    + f"The configured position cap is {get_config()['max_position_pct']:g}% of portfolio NAV. "
                     + NO_EXTERNAL_TOOLS
                     + get_language_instruction()
                 ),
@@ -78,21 +84,33 @@ def create_trader(llm):
                     "sized by how strong the case is; conflict alone is not a Hold.\n"
                     "- **Reasoning**: why, against the plan and the price structure\n"
                     "- **Entry Price**, **Stop Loss**, **Position Sizing**: when you can state them"
+                    "\n- **Position Size Pct**: optional numeric total target percentage of portfolio NAV"
+                    "\n- **Order Quantity**: optional positive number of units, supported by supplied cash/holdings"
                 ),
             },
         ]
 
-        trader_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            messages,
-            render_trader_proposal,
-            "Trader",
-        )
+        proposal = invoke_structured(structured_llm, messages, "Trader")
+        try:
+            if proposal is not None:
+                values = proposal.model_dump() if hasattr(proposal, "model_dump") else proposal
+                trader_plan = render_trader_proposal(TraderProposal.model_validate(values))
+            else:
+                trader_plan = llm.invoke(messages).content
+            validation = check_trader_text(trader_plan, state)
+        except ValueError as exc:
+            validation = {"status": "invalid", "issues": [str(exc).split("\n")[0]], "notes": []}
+        if validation["status"] == "invalid":
+            trader_plan = "**Action**: REVIEW\n\nProposal rejected by programmatic validation.\n\n" + "\n".join(
+                f"- {issue}" for issue in validation["issues"]
+            )
+        elif validation["notes"]:
+            trader_plan += "\n\n**Validation notes**:\n" + "\n".join(f"- {note}" for note in validation["notes"])
 
         return {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
+            "trader_validation": validation,
         }
 
     return trader_node

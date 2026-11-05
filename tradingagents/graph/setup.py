@@ -21,7 +21,10 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.analysts.turn import WRAP_UP
+from tradingagents.agents.evidence import assess_evidence, tool_evidence
 from tradingagents.agents.state import AgentState
+from tradingagents.dataflows.router import get_vendor
+from tradingagents.dataflows.vendors.yahoo.snapshot import prepare_market_snapshot
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -59,12 +62,19 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
     that turn ends it whatever it answers, so a model that keeps calling tools
     cannot run the graph into its recursion limit (#1420).
     """
-    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
+    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str, "analyst_evidence": dict})
     graph = StateGraph(AgentState, output_schema=output)
     graph.add_node("agent", agent)
+    def finish(state):
+        evidence = (state.get("analyst_evidence", {}).get(spec.key, {}) if not spec.tools
+                    else tool_evidence(state["messages"]))
+        return {"analyst_evidence": {spec.key: evidence}}
+
+    graph.add_node("finish", finish)
+    graph.add_edge("finish", END)
     graph.add_edge(START, "agent")
     if not spec.tools:
-        graph.add_edge("agent", END)
+        graph.add_edge("agent", "finish")
         return graph.compile()
 
     def calls(messages):
@@ -84,9 +94,9 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
 
     graph.add_node("tools", ToolNode(list(spec.tools)))
     graph.add_node("wrap_up", wrap_up)
-    graph.add_conditional_edges("agent", _tools_or_done, ["tools", END])
+    graph.add_conditional_edges("agent", _tools_or_done, {"tools": "tools", END: "finish"})
     graph.add_conditional_edges("tools", more_or_wrap_up, ["agent", "wrap_up"])
-    graph.add_edge("wrap_up", END)
+    graph.add_edge("wrap_up", "finish")
     return graph.compile()
 
 
@@ -141,6 +151,30 @@ class GraphSetup:
 
         workflow = StateGraph(AgentState)
 
+        def prepare(state):
+            if "market" not in [spec.key for spec in plan.specs]:
+                return {"market_data": {}}
+            try:
+                for category, method in (("core_stock_apis", "get_stock_data"), ("technical_indicators", "get_indicators")):
+                    primary = get_vendor(category, method).split(",")[0].strip()
+                    if primary != "yfinance":
+                        return {"market_data": {"status": "unavailable", "reason": (
+                            "A shared run snapshot currently requires yfinance as the primary price and indicator vendor; "
+                            f"{method} is configured with {primary}. Mixed-source prices are not certified."
+                        )}}
+                snapshot = prepare_market_snapshot(state["company_of_interest"], state["trade_date"])
+            except Exception as exc:
+                logger.warning("Run market snapshot unavailable: %s", exc)
+                snapshot = {"status": "unavailable", "reason": type(exc).__name__,
+                            "symbol": state["company_of_interest"], "as_of_date": state["trade_date"]}
+            return {"market_data": snapshot}
+
+        workflow.add_node("Prepare market data", prepare)
+        workflow.add_edge(START, "Prepare market data")
+        workflow.add_node("Evidence check", lambda state: {
+            "data_quality": assess_evidence(state, [spec.key for spec in plan.specs]),
+        })
+
         for spec in plan.specs:
             workflow.add_node(spec.agent_node,
                               _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds))
@@ -162,8 +196,13 @@ class GraphSetup:
             workflow.add_node("Memory Log", memory_node)
             first_steps.append("Memory Log")
         for node in first_steps:
-            workflow.add_edge(START, node)
-        workflow.add_edge(first_steps, "Bull Researcher")
+            workflow.add_edge("Prepare market data", node)
+        workflow.add_edge(first_steps, "Evidence check")
+        workflow.add_conditional_edges(
+            "Evidence check",
+            lambda state: "Bull Researcher" if state["data_quality"]["status"] == "adequate" else "Portfolio Manager",
+            {"Bull Researcher": "Bull Researcher", "Portfolio Manager": "Portfolio Manager"},
+        )
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
         for debate_node in ("Bull Researcher", "Bear Researcher"):
@@ -173,7 +212,11 @@ class GraphSetup:
                 DEBATE_PATH_MAP,
             )
         workflow.add_edge("Research Manager", "Trader")
-        workflow.add_edge("Trader", "Aggressive Analyst")
+        workflow.add_conditional_edges(
+            "Trader",
+            lambda state: "Aggressive Analyst" if state.get("trader_validation", {}).get("status") == "validated" else "Portfolio Manager",
+            {"Aggressive Analyst": "Aggressive Analyst", "Portfolio Manager": "Portfolio Manager"},
+        )
         # All three risk edges share the complete RISK_ANALYSIS_PATH_MAP (#1088).
         for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
             workflow.add_conditional_edges(

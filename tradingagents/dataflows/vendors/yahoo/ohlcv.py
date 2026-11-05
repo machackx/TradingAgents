@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import UTC, datetime
 
 import pandas as pd
 import yfinance as yf
@@ -7,6 +8,7 @@ import yfinance as yf
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.files import replace_file
+from tradingagents.dataflows.pinned_market import current_snapshot
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 
@@ -196,8 +198,14 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     # A cached file may be empty if a prior fetch failed (unknown symbol,
     # transient rate limit). Treat an empty/columnless cache as a miss and
     # re-fetch rather than serving the poisoned file forever.
-    data = None
-    if os.path.exists(data_file):
+    pinned = current_snapshot()
+    if pinned and pinned.get("symbol") != canonical:
+        raise NoMarketDataError(symbol, canonical, "run snapshot belongs to a different instrument")
+    if pinned and pinned.get("status") != "available":
+        raise NoMarketDataError(symbol, canonical, "run market snapshot is unavailable")
+    data = pd.DataFrame(pinned["records"]) if pinned else None
+    downloaded_at = pinned.get("downloaded_at_utc") if pinned else None
+    if data is None and os.path.exists(data_file):
         cached = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
         if (
             not cached.empty
@@ -205,6 +213,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
             and _cache_is_fresh(data_file, as_of_dt, now)
         ):
             data = cached
+            downloaded_at = datetime.fromtimestamp(os.path.getmtime(data_file), UTC).isoformat()
 
     if data is None:
         # yf.download catches every error, a rate limit included, and returns
@@ -223,8 +232,10 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
             raise_for_empty(symbol, canonical, "price rows")
         replace_file(data_file, lambda temp: downloaded.to_csv(temp, index=False, encoding="utf-8"))
         data = downloaded
+        downloaded_at = datetime.now(UTC).isoformat()
 
     data = _clean_dataframe(data)
+    data.attrs["downloaded_at_utc"] = downloaded_at
 
     # Filter to as_of_date to prevent look-ahead bias in backtesting.
     data = data[data["Date"] <= as_of_dt]

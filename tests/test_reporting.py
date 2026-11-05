@@ -42,6 +42,27 @@ def test_write_report_tree_creates_files(tmp_path):
 
 
 @pytest.mark.unit
+def test_report_persists_checks_and_snapshot_and_clears_old_artifacts(tmp_path):
+    import json
+
+    snapshot = {"status": "available", "snapshot_id": "pinned-test", "captured_at_utc": "2026-11-05T00:00:00Z",
+                "latest_bar_date": "2026-11-04", "bar_status": "prior-session bar", "records": []}
+    state = {**_state(), "market_data": snapshot, "data_quality": {
+        "status": "insufficient_data", "issues": ["news: no company evidence"]},
+        "trader_validation": {"status": "invalid", "issues": ["cash insufficient"]}}
+    write_report_tree(state, "AAPL", tmp_path)
+    assert json.loads((tmp_path / "market_snapshot.json").read_text()) == snapshot
+    assert json.loads((tmp_path / "analysis_checks.json").read_text())["data_quality"]["status"] == "insufficient_data"
+    for name in ("complete_report.md", "complete_report.html"):
+        text = (tmp_path / name).read_text()
+        assert "pinned-test" in text and "insufficient_data" in text
+        assert "news: no company evidence" in text
+    write_report_tree(_state(), "AAPL", tmp_path)
+    assert not (tmp_path / "market_snapshot.json").exists()
+    assert not (tmp_path / "analysis_checks.json").exists()
+
+
+@pytest.mark.unit
 def test_save_reports_explicit_path(tmp_path):
     graph = SimpleNamespace(run_settings=lambda: SETTINGS)
     out = TradingAgentsGraph.save_reports(graph, _state(), "AAPL", save_path=tmp_path)

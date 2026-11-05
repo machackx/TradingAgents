@@ -276,7 +276,8 @@ class TestTraderAgent:
         llm.invoke.return_value = MagicMock(content=plain_response)
         trader = create_trader(llm)
         result = trader(_make_trader_state())
-        assert result["trader_investment_plan"] == plain_response
+        assert result["trader_investment_plan"].startswith(plain_response)
+        assert result["trader_validation"]["status"] == "validated"
 
 
 # ---------------------------------------------------------------------------

@@ -239,9 +239,28 @@ def _run_details(final_state: dict, settings: dict | None) -> list[tuple[str, st
             details.append(("Data vendors", " ".join(
                 _group(_CATEGORY.get(k, k), _chain(v)) for k, v in vendors.items()
             )))
+        if s("chinese_sources_enabled"):
+            details.append(("Chinese supplements (HK/A shares, mapped ADRs)", _fields([
+                s("chinese_news_sources", ""),
+                f"Futu announcements: {bool(s('futu_announcements_enabled'))}",
+                f"Futu community: {bool(s('futu_community_enabled'))}",
+            ])))
         details.append(("Version", escape(f"TradingAgents {s('version', '?')}")))
     if final_state.get("memory_note"):
         details.append(("Memory log", escape(final_state["memory_note"])))
+    quality = final_state.get("data_quality") or {}
+    if quality:
+        details.append(("Evidence check", _fields([quality.get("status", "not checked")])))
+        for issue in quality.get("issues", []):
+            details.append(("Evidence gap", escape(str(issue))))
+    validation = final_state.get("trader_validation") or {}
+    if validation:
+        details.append(("Proposal check", _fields([validation.get("status", "not checked")])))
+    snapshot = final_state.get("market_data") or {}
+    if snapshot.get("snapshot_id"):
+        details.append(("Market snapshot", _fields([
+            snapshot["snapshot_id"], snapshot["captured_at_utc"], snapshot["bar_status"],
+        ])))
     return details
 
 

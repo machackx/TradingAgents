@@ -10,7 +10,11 @@ claim. Deterministic, no LLM involved.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from stockstats import wrap
@@ -26,6 +30,43 @@ DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
     "rsi", "boll", "boll_ub", "boll_lb",
     "macd", "macds", "macdh", "atr",
 )
+
+
+def prepare_market_snapshot(symbol: str, as_of_date: str) -> dict:
+    """Freeze raw rows once, as JSON-compatible state for all tools/checkpoints.
+
+    Same-local-day bars are conservatively provisional even after normal market
+    hours: the vendor does not certify finality, and no calendar is assumed.
+    """
+    canonical = normalize_symbol(symbol)
+    data = _verified_rows(symbol, as_of_date)
+    captured = datetime.now(UTC)
+    suffix = canonical.rpartition(".")[2]
+    zone, currency = {
+        "HK": ("Asia/Hong_Kong", "HKD"), "SS": ("Asia/Shanghai", "CNY"),
+        "SZ": ("Asia/Shanghai", "CNY"), "BJ": ("Asia/Shanghai", "CNY"),
+        "T": ("Asia/Tokyo", "JPY"), "L": ("Europe/London", None),
+    }.get(suffix, ("UTC", None) if "." in canonical else ("America/New_York", "USD"))
+    if canonical.endswith("-USD"):
+        zone, currency = "UTC", "USD"
+    latest = pd.Timestamp(data["Date"].iloc[-1]).date()
+    provisional = latest >= captured.astimezone(ZoneInfo(zone)).date()
+    serializable = data.copy()
+    serializable["Date"] = serializable["Date"].dt.strftime("%Y-%m-%d")
+    # DataFrame.to_json rounds to a fixed number of decimals, which can turn
+    # a small crypto price into zero. Keep Python floats' full precision.
+    records = [{key: None if pd.isna(value) else value for key, value in row.items()}
+               for row in serializable.to_dict(orient="records")]
+    identity = json.dumps([canonical, as_of_date, records], sort_keys=True).encode()
+    return {
+        "status": "available", "symbol": canonical, "source": "yfinance",
+        "as_of_date": as_of_date, "snapshot_id": hashlib.sha256(identity).hexdigest()[:16],
+        "captured_at_utc": captured.isoformat(),
+        "downloaded_at_utc": data.attrs.get("downloaded_at_utc"),
+        "latest_bar_date": str(latest), "quote_currency": currency,
+        "bar_status": "provisional (current-session, finality unverified)" if provisional else "prior-session bar",
+        "records": records,
+    }
 
 
 def _verified_rows(symbol: str, as_of_date: str) -> pd.DataFrame:

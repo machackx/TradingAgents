@@ -25,6 +25,11 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
+    "TRADINGAGENTS_CHINESE_SOURCES_ENABLED": "chinese_sources_enabled",
+    "TRADINGAGENTS_CHINESE_NEWS_SOURCES": "chinese_news_sources",
+    "TRADINGAGENTS_FUTU_COMMUNITY_ENABLED": "futu_community_enabled",
+    "TRADINGAGENTS_FUTU_ANNOUNCEMENTS_ENABLED": "futu_announcements_enabled",
+    "TRADINGAGENTS_MAX_POSITION_PCT": "max_position_pct",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -135,12 +140,25 @@ def build_default_config() -> dict:
         "max_recur_limit": 100,
         # Rounds of tool calls an analyst may make before it is asked for its report.
         "max_tool_rounds": 20,
+        # A hard cap for proposed portfolio percentages (no leverage by default).
+        "max_position_pct": 100.0,
         # News / data fetching parameters
         # Increase for longer lookback strategies or to broaden macro coverage;
         # decrease to reduce token usage in agent prompts.
         "news_article_limit": 20,             # max articles per ticker (ticker-news)
         "global_news_article_limit": 10,      # max articles for global/macro news
         "global_news_lookback_days": 7,       # macro news lookback window
+        # Additive sources for HK/A shares and explicitly mapped Chinese ADRs.
+        # The primary news_data fallback chain below still runs as configured.
+        "chinese_sources_enabled": True,
+        "chinese_news_sources": "futu,eastmoney",  # all listed sources are read
+        "chinese_news_keywords": {},  # e.g. {"0700.HK": "腾讯", "NEWADR": "中文公司名"}
+        "chinese_news_fetch_limit": 30,  # upstream sample size, before date filtering
+        "chinese_news_article_limit": 16,  # combined supplement budget, with deduplication
+        "chinese_source_timeout": 10,
+        "futu_announcements_enabled": True,
+        "futu_community_enabled": True,
+        "chinese_macro_queries": ["中国央行", "港股"],
         # Search queries used by get_global_news for macro headlines. Extend or
         # replace to broaden geographic / sector coverage.
         "global_news_queries": [

@@ -36,6 +36,7 @@ class PortfolioContext(BaseModel):
     cash: float | None = Field(default=None, description="Free cash available")
     currency: str | None = Field(default=None, description="Currency label for cash and prices")
     positions: list[Position] = Field(default_factory=list)
+    net_asset_value: float | None = Field(default=None, gt=0, description="Optional total NAV in portfolio currency")
 
     def positions_in(self, ticker: str) -> list[Position]:
         """The holdings of the instrument the run prices for ``ticker``, under any
@@ -62,6 +63,8 @@ class PortfolioContext(BaseModel):
             lines.append(f"- No current position in {symbol}")
         if self.cash is not None:
             lines.append(f"- Cash available: {self.cash:,.2f}{' ' + self.currency if self.currency else ''}")
+        if self.net_asset_value is not None:
+            lines.append(f"- Portfolio net asset value: {self.net_asset_value:,.2f}{' ' + self.currency if self.currency else ''}")
         others = [p for p in self.positions if all(p is not h for h in held)]
         if others:
             lines.append("- Other positions: " + ", ".join(f"{p.ticker.upper()} {p.quantity:,.4g}" for p in others))
