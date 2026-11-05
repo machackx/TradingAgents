@@ -281,7 +281,22 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
             value = values.get((end, index)) if chosen[label].get(end) == index else None
             cells.append("" if value is None else _millions(value) if unit == "USD" else f"{value:.2f}")
         rows.append(",".join([end + names[index]] + cells))
-    return header + "\n" + "\n".join(rows) + "\n"
+    result = header + "\n" + "\n".join(rows) + "\n"
+    if quarterly and (date.fromisoformat(as_of_date) - date.fromisoformat(latest_period)).days > 200:
+        annual_ends = {
+            end for _, tags in _STATEMENTS[kind]
+            for values in _as_of_units(us_gaap, tags, as_of_date, (_SPANS["annual"],), _ANNUAL_FORMS).values()
+            for end, _ in values
+        }
+        if annual_ends and max(annual_ends) > latest_period:
+            result += (
+                "\n## Newer annual filing reference (not quarterly data)\n"
+                "Recent interim periods are missing from standardized SEC tags. The newer annual "
+                "filing below is a separate reference, not a substitute quarter or evidence of "
+                "recent quarterly changes. Do not combine annual and interim figures.\n\n"
+                + _statement(kind, ticker, "annual", as_of_date, title)
+            )
+    return result
 
 
 def _millions(value: float) -> str:

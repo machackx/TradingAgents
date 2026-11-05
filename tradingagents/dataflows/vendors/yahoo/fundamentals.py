@@ -114,14 +114,13 @@ def _statement(ticker, freq, as_of_date, title, quarterly_attr, annual_attr) -> 
         return withheld
     what = title.lower()
     attr = quarterly_attr if freq.lower() == "quarterly" else annual_attr
-    company = yf.Ticker(canonical)
-    data = yf_retry(lambda: getattr(company, attr))
+    data = yf_retry(lambda: getattr(yf.Ticker(canonical), attr))
     if data is None or data.empty:
         raise_for_empty(ticker, canonical, f"{what} data")
     latest_period = max(data.columns).strftime("%Y-%m-%d")
     reported = None
     try:
-        profile = yf_retry(lambda: company.info)
+        profile = get_company_profile(canonical)
         if isinstance(profile, dict):
             reported = profile.get("financialCurrency")
     except Exception as exc:

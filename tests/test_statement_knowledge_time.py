@@ -50,6 +50,20 @@ def test_a_current_run_is_still_served_yahoo_statements():
 
 
 @pytest.mark.unit
+def test_yahoo_statement_reports_its_currency_and_period_without_assuming_ads_conversion():
+    import pandas as pd
+
+    from tradingagents.dataflows.date_window import get_current_date
+
+    frame = pd.DataFrame({pd.Timestamp("2026-06-30"): [22_000_000_000]}, index=["Total Revenue"])
+    with mock.patch.object(yahoo, "yf_retry", return_value=frame), \
+         mock.patch.object(yahoo, "get_company_profile", return_value={"financialCurrency": "HKD"}):
+        out = yahoo.get_income_statement("FUTU", "quarterly", get_current_date())
+    assert "# Latest tagged period: 2026-06-30" in out
+    assert "raw HKD" in out and "no ADS conversion is inferred" in out
+
+
+@pytest.mark.unit
 def test_statements_come_from_sec_edgar_first_by_default():
     set_config(copy.deepcopy(default_config.DEFAULT_CONFIG))
     served = []

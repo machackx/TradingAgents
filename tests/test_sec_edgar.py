@@ -442,3 +442,21 @@ def test_future_currency_facts_cannot_leak_into_a_historical_statement(monkeypat
 def test_capex_sign_and_cashflow_scope_are_explicit(monkeypatch):
     out = _serve_statement(monkeypatch, {"PaymentsToAcquirePropertyPlantAndEquipment": _annual_units(HKD=54_732_000)}, "cashflow")
     assert "positive means cash spent" in out and "customer-fund movements" in out
+
+
+@pytest.mark.unit
+def test_stale_interim_tags_include_a_newer_annual_reference_without_fabricating_quarters(monkeypatch):
+    facts = {"NetCashProvidedByUsedInOperatingActivities": {"units": {"HKD": [
+        _fact("2022-09-30", 2_170_283_000, "2022-11-01", form="6-K", start="2022-01-01"),
+        _fact("2025-12-31", 40_788_133_000, "2026-04-15", form="20-F", start="2025-01-01"),
+    ]}}}
+    monkeypatch.setattr(sec_edgar, "_fetch_json", lambda url:
+                        TICKER_MAP if "company_tickers" in url else {"facts": {"us-gaap": facts}})
+    out = sec_edgar.get_cashflow("AAPL", "quarterly", "2026-11-05")
+    interim, annual = out.split("## Newer annual filing reference (not quarterly data)")
+    assert _table(interim)[0] == ["2022-09-30 (9 months)"]
+    assert _table(annual[annual.index("# Cash Flow Statement"):])[0] == ["2025-12-31"]
+    assert "Do not combine annual and interim figures" in annual
+    assert "2026-06-30" not in out
+    old = sec_edgar.get_cashflow("AAPL", "quarterly", "2026-03-01")
+    assert "annual filing reference" not in old and "40788133000" not in old
